@@ -33,16 +33,26 @@ class GraphRepository:
 
     # ---------- schema bootstrap ----------
     def ensure_constraints(self) -> None:
+        """Constraints compatible with Neo4j Community Edition.
+
+        Property-existence constraints (`IS NOT NULL`) are Enterprise-only,
+        so we only declare uniqueness on Document.fileName and Chunk.id.
+        Entity dedupe relies on `apoc.merge.node({id: ...})` keyed on the
+        node's id property, matching the reference llm-graph-builder.
+        """
         statements = [
             "CREATE CONSTRAINT document_fileName IF NOT EXISTS "
             "FOR (d:Document) REQUIRE d.fileName IS UNIQUE",
             "CREATE CONSTRAINT chunk_id IF NOT EXISTS "
             "FOR (c:Chunk) REQUIRE c.id IS UNIQUE",
-            "CREATE CONSTRAINT entity_id IF NOT EXISTS "
-            "FOR (e:__Entity__) REQUIRE (e.id) IS NOT NULL",
         ]
         for q in statements:
-            self._run(q)
+            try:
+                self._run(q)
+            except Exception as e:
+                # log + continue: an unsupported constraint shouldn't kill ingest
+                import logging
+                logging.warning("constraint create failed (%s): %s", q.split()[2], e)
 
     # ---------- documents ----------
     def upsert_document(self, file_name: str, sha1: str, title: str | None, source: str, length: int) -> None:
