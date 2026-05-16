@@ -499,7 +499,7 @@ export function SettingsPage() {
           {toast.msg}
         </div>
       )}
-    </>
+    </PageContainer>
   );
 }
 

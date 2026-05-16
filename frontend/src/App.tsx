@@ -1,5 +1,6 @@
 import { AppShell, useAppConfig, useHashRoute } from "@/components/AppShell";
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog";
+import { ActiveJobsBanner } from "@/components/ActiveJobsBanner";
 import { ConfirmHost } from "@/lib/confirm";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { SchemaPage } from "@/pages/SchemaPage";
@@ -7,6 +8,7 @@ import { DocumentsPage } from "@/pages/DocumentsPage";
 import { IngestPage } from "@/pages/IngestPage";
 import { GraphPage } from "@/pages/GraphPage";
 import { PromptsPage } from "@/pages/PromptsPage";
+import { JobsPage } from "@/pages/JobsPage";
 import { LLMCallsPage } from "@/pages/LLMCallsPage";
 
 export default function App() {
@@ -22,10 +24,12 @@ export default function App() {
         {route === "ingest"     && <IngestPage />}
         {route === "graph"      && <GraphPage config={config} />}
         {route === "prompts"    && <PromptsPage />}
+        {route === "jobs"       && <JobsPage />}
         {route === "llm-calls"  && <LLMCallsPage />}
       </AppShell>
       <UnsavedChangesDialog />
       <ConfirmHost />
+      <ActiveJobsBanner />
     </>
   );
 }

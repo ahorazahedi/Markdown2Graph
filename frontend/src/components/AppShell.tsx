@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Database, FileText, GitBranch, Play, ScrollText, Settings2, FileCode2 } from "lucide-react";
+import { Activity, Database, FileText, GitBranch, Play, ScrollText, Settings2, FileCode2, ListChecks } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, AppConfig } from "@/lib/api";
 import { guard } from "@/lib/unsavedGuard";
@@ -10,6 +10,7 @@ export type Route =
   | "ingest"
   | "graph"
   | "prompts"
+  | "jobs"
   | "llm-calls"
   | "settings";
 
@@ -19,6 +20,7 @@ const NAV: { key: Route; label: string; icon: any; hint: string }[] = [
   { key: "ingest",     label: "Ingest",     icon: Play,       hint: "Run extraction" },
   { key: "graph",      label: "Graph",      icon: Database,   hint: "Viewer & stats" },
   { key: "prompts",    label: "Prompts",    icon: FileCode2,  hint: "System templates" },
+  { key: "jobs",       label: "Jobs",       icon: ListChecks, hint: "Run history & logs" },
   { key: "llm-calls",  label: "LLM Calls",  icon: ScrollText, hint: "Audit log" },
   { key: "settings",   label: "Settings",   icon: Settings2,  hint: "LLM & Neo4j config" },
 ];
@@ -72,10 +74,6 @@ export function AppShell({ children, config, route, onRouteChange }: {
             })}
           </div>
         </nav>
-        <div className="shrink-0 border-t border-border px-4 py-3 text-2xs leading-relaxed text-muted-foreground">
-          <div className="truncate"><span className="text-foreground">model</span> · {config?.llm.model ?? "—"}</div>
-          <div className="truncate"><span className="text-foreground">embed</span> · {config?.embedding.model ?? "—"} ({config?.embedding.dimension})</div>
-        </div>
       </aside>
       <main className="h-screen min-w-0 overflow-hidden">
         {children}

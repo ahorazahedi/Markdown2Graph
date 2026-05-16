@@ -265,7 +265,59 @@ export const api = {
     jsonFetch<{ rendered: string }>(`/api/prompts/${encodeURIComponent(key)}/preview`, {
       method: "POST", body: JSON.stringify(body),
     }),
+
+  // jobs (durable run history)
+  listJobs: (params: { status?: string; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set("status", params.status);
+    if (params.limit != null) q.set("limit", String(params.limit));
+    if (params.offset != null) q.set("offset", String(params.offset));
+    return jsonFetch<{ items: JobRun[]; overview: JobOverview }>(`/api/jobs?${q.toString()}`);
+  },
+  getJob: (id: string) => jsonFetch<JobRun>(`/api/jobs/${id}`),
+  listJobEvents: (id: string, after = 0, level?: string) => {
+    const q = new URLSearchParams();
+    q.set("after", String(after));
+    if (level) q.set("level", level);
+    return jsonFetch<{ events: JobEvent[]; next_after: number; count: number }>(
+      `/api/jobs/${id}/events?${q.toString()}`,
+    );
+  },
 };
+
+export interface JobRun {
+  id: string;
+  kind: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  progress: number;
+  stage: string;
+  message: string;
+  error: string | null;
+  scope: Record<string, any>;
+  result: any;
+  started_at: string | null;
+  ended_at: string | null;
+  created_at: string;
+}
+
+export interface JobOverview {
+  total: number;
+  running: number;
+  queued: number;
+  succeeded: number;
+  failed: number;
+}
+
+export interface JobEvent {
+  id: number;
+  ts: string;
+  stage: string;
+  message: string;
+  progress: number;
+  file_name: string | null;
+  level: "info" | "warn" | "error";
+  extra: any;
+}
 
 export interface SettingsView {
   llm: {
