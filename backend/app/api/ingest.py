@@ -1,45 +1,54 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from flask import Blueprint, jsonify, request
 
 from ..errors import NotFoundError, ValidationError
+from ..repositories.app_state_repository import AppStateRepository
 from ..services.job_registry import job_registry
-from ..services.markdown_loader import MarkdownLoader
 from ..services.pipeline import IngestionPipeline, PipelineConfig
 
 bp = Blueprint("ingest", __name__)
 
 
-@bp.post("/ingest")
-def start_ingest():
+@bp.post("/ingest/run")
+def run_ingest():
     """Body:
-       { "path": "/abs/path",
-         "allowed_nodes": ["Disease","Drug",...],
-         "allowed_relationships": [["Drug","TREATS","Disease"], ...],
-         "extra_instructions": "..."  (optional) }
+       { "document_ids": [...]   (optional; default = all pending/failed),
+         "reextract":   bool      (optional; default false) }
+
+    Schema is loaded from app state — no need to pass it.
     """
     data = request.get_json(silent=True) or {}
-    folder = data.get("path")
-    if not folder:
-        raise ValidationError("'path' is required")
-    p = Path(folder).expanduser().resolve()
-    if not p.is_dir():
-        raise ValidationError(f"not a directory: {p}")
-
-    files = MarkdownLoader(p).list_files()
-    if not files:
-        raise ValidationError(f"no .md files in {p}")
+    state = AppStateRepository()
+    schema = state.get_schema()
+    if not schema.get("node_labels"):
+        raise ValidationError("no schema configured — save one via PUT /api/schema first")
 
     cfg = PipelineConfig(
-        allowed_nodes=data.get("allowed_nodes") or [],
-        allowed_relationships=[tuple(r) for r in (data.get("allowed_relationships") or [])],
-        extra_instructions=data.get("extra_instructions"),
+        allowed_nodes=schema["node_labels"],
+        allowed_relationships=[tuple(t) for t in schema["triplets"]],
+        extra_instructions=schema.get("extra") or None,
     )
     pipeline = IngestionPipeline(cfg)
-    job_id = job_registry.submit(lambda update: pipeline.run(files, progress=update))
-    return jsonify({"job_id": job_id, "file_count": len(files)})
+
+    doc_ids = data.get("document_ids")
+    reextract = bool(data.get("reextract", False))
+
+    if doc_ids:
+        ids = [int(x) for x in doc_ids]
+        for did in ids:
+            if not state.get_document(did):
+                raise ValidationError(f"document {did} not found")
+
+        def runner(update):
+            return pipeline.run_documents(ids, reextract=reextract, progress=update)
+    else:
+        def runner(update):
+            return pipeline.run_pending(progress=update)
+
+    job_id = job_registry.submit(runner)
+    return jsonify({"job_id": job_id, "document_ids": doc_ids or "all-pending",
+                    "reextract": reextract})
 
 
 @bp.get("/ingest/<job_id>")

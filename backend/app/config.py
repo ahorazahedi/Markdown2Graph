@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     llm_log_enabled: bool = True
     llm_log_max_body_chars: int = 200000
 
+    # Persistent app state (schemas, documents)
+    app_state_db_path: str = "backend/data/text2graph.db"
+
     @field_validator("log_level")
     @classmethod
     def _upper_log(cls, v: str) -> str:

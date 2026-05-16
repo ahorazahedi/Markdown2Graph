@@ -1,0 +1,285 @@
+"""Persistent app state: schemas + documents.
+
+Separate SQLite file from the LLM call audit log so the two can be backed
+up / cleared independently.
+
+Tables
+------
+schemas           - latest active schema (single row, id=1)
+schema_versions   - immutable history of every save (audit + rollback)
+documents         - registry of every uploaded markdown file, status, counts
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterator, Optional
+
+from ..config import get_settings
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _resolve(raw: str) -> Path:
+    p = Path(raw).expanduser()
+    return p if p.is_absolute() else _REPO_ROOT / p
+
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schemas (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    node_labels     TEXT    NOT NULL DEFAULT '[]',
+    triplets        TEXT    NOT NULL DEFAULT '[]',
+    extra           TEXT    NOT NULL DEFAULT '',
+    updated_at      TEXT    NOT NULL,
+    updated_by      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS schema_versions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at      TEXT    NOT NULL,
+    node_labels     TEXT    NOT NULL,
+    triplets        TEXT    NOT NULL,
+    extra           TEXT    NOT NULL DEFAULT '',
+    source          TEXT    NOT NULL DEFAULT 'manual'  -- 'manual' | 'discovered' | 'imported'
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_name       TEXT    NOT NULL UNIQUE,
+    title           TEXT,
+    sha1            TEXT    NOT NULL,
+    source_path     TEXT    NOT NULL,
+    size_bytes      INTEGER NOT NULL DEFAULT 0,
+    status          TEXT    NOT NULL DEFAULT 'pending', -- pending|processing|completed|failed
+    error           TEXT,
+    chunk_count     INTEGER NOT NULL DEFAULT 0,
+    entity_count    INTEGER NOT NULL DEFAULT 0,
+    relationship_count INTEGER NOT NULL DEFAULT 0,
+    last_job_id     TEXT,
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL,
+    processed_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_documents_status     ON documents(status);
+CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at DESC);
+"""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class AppStateRepository:
+    _lock = threading.Lock()
+    _initialized: set[str] = set()
+
+    def __init__(self, db_path: Optional[str] = None):
+        s = get_settings()
+        self.path = _resolve(db_path or s.app_state_db_path)
+        self._ensure()
+
+    def _ensure(self) -> None:
+        key = str(self.path)
+        if key in self._initialized:
+            return
+        with self._lock:
+            if key in self._initialized:
+                return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._connect() as c:
+                c.executescript(_SCHEMA)
+                c.execute("PRAGMA journal_mode=WAL;")
+                # seed the single-row schemas table
+                row = c.execute("SELECT 1 FROM schemas WHERE id = 1").fetchone()
+                if not row:
+                    c.execute(
+                        "INSERT INTO schemas (id, node_labels, triplets, extra, updated_at) "
+                        "VALUES (1, '[]', '[]', '', ?)",
+                        (_now(),),
+                    )
+            self._initialized.add(key)
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    # ---------------- schemas ----------------
+    def get_schema(self) -> dict:
+        with self._connect() as c:
+            row = c.execute(
+                "SELECT node_labels, triplets, extra, updated_at, updated_by FROM schemas WHERE id = 1"
+            ).fetchone()
+        if not row:
+            return {"node_labels": [], "triplets": [], "extra": "", "updated_at": None, "updated_by": None}
+        return {
+            "node_labels": json.loads(row["node_labels"]),
+            "triplets": json.loads(row["triplets"]),
+            "extra": row["extra"] or "",
+            "updated_at": row["updated_at"],
+            "updated_by": row["updated_by"],
+        }
+
+    def save_schema(
+        self,
+        *,
+        node_labels: list[str],
+        triplets: list[list[str]],
+        extra: str = "",
+        source: str = "manual",
+        updated_by: str | None = None,
+    ) -> dict:
+        nl = json.dumps(node_labels, ensure_ascii=False)
+        tp = json.dumps(triplets, ensure_ascii=False)
+        now = _now()
+        with self._connect() as c:
+            c.execute(
+                "UPDATE schemas SET node_labels = ?, triplets = ?, extra = ?, "
+                "updated_at = ?, updated_by = ? WHERE id = 1",
+                (nl, tp, extra, now, updated_by),
+            )
+            c.execute(
+                "INSERT INTO schema_versions (created_at, node_labels, triplets, extra, source) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (now, nl, tp, extra, source),
+            )
+        return self.get_schema()
+
+    def list_schema_versions(self, limit: int = 50) -> list[dict]:
+        with self._connect() as c:
+            rows = c.execute(
+                "SELECT id, created_at, source FROM schema_versions "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_schema_version(self, version_id: int) -> dict | None:
+        with self._connect() as c:
+            row = c.execute(
+                "SELECT id, created_at, node_labels, triplets, extra, source "
+                "FROM schema_versions WHERE id = ?",
+                (version_id,),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["node_labels"] = json.loads(d["node_labels"])
+        d["triplets"] = json.loads(d["triplets"])
+        return d
+
+    # ---------------- documents ----------------
+    def upsert_document(
+        self,
+        *,
+        file_name: str,
+        title: str | None,
+        sha1: str,
+        source_path: str,
+        size_bytes: int,
+    ) -> int:
+        now = _now()
+        with self._connect() as c:
+            row = c.execute("SELECT id, status FROM documents WHERE file_name = ?",
+                            (file_name,)).fetchone()
+            if row:
+                # bump sha1 + path if file replaced; reset status so user can re-ingest
+                c.execute(
+                    "UPDATE documents SET sha1 = ?, title = ?, source_path = ?, "
+                    "size_bytes = ?, status = CASE WHEN sha1 = ? THEN status ELSE 'pending' END, "
+                    "error = NULL, updated_at = ? WHERE id = ?",
+                    (sha1, title, source_path, size_bytes, sha1, now, row["id"]),
+                )
+                return int(row["id"])
+            cur = c.execute(
+                "INSERT INTO documents (file_name, title, sha1, source_path, size_bytes, "
+                "status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                (file_name, title, sha1, source_path, size_bytes, now, now),
+            )
+            return int(cur.lastrowid)
+
+    def list_documents(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict]:
+        sql = """
+            SELECT id, file_name, title, sha1, source_path, size_bytes,
+                   status, error, chunk_count, entity_count, relationship_count,
+                   last_job_id, created_at, updated_at, processed_at
+            FROM documents
+        """
+        params: list = []
+        if status:
+            sql += " WHERE status = ?"
+            params.append(status)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        with self._connect() as c:
+            return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+    def get_document(self, doc_id: int) -> dict | None:
+        with self._connect() as c:
+            row = c.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+            return dict(row) if row else None
+
+    def get_document_by_name(self, file_name: str) -> dict | None:
+        with self._connect() as c:
+            row = c.execute("SELECT * FROM documents WHERE file_name = ?",
+                            (file_name,)).fetchone()
+            return dict(row) if row else None
+
+    def set_status(self, doc_id: int, status: str, *, error: str | None = None,
+                   job_id: str | None = None) -> None:
+        with self._connect() as c:
+            c.execute(
+                "UPDATE documents SET status = ?, error = ?, last_job_id = COALESCE(?, last_job_id), "
+                "updated_at = ? WHERE id = ?",
+                (status, error, job_id, _now(), doc_id),
+            )
+
+    def set_counts(self, doc_id: int, *, chunk_count: int, entity_count: int,
+                   relationship_count: int) -> None:
+        now = _now()
+        with self._connect() as c:
+            c.execute(
+                "UPDATE documents SET chunk_count = ?, entity_count = ?, relationship_count = ?, "
+                "processed_at = ?, updated_at = ? WHERE id = ?",
+                (chunk_count, entity_count, relationship_count, now, now, doc_id),
+            )
+
+    def delete_document(self, doc_id: int) -> bool:
+        with self._connect() as c:
+            cur = c.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+            return (cur.rowcount or 0) > 0
+
+    def stats(self) -> dict:
+        with self._connect() as c:
+            row = c.execute(
+                """
+                SELECT
+                  COUNT(*)                                                AS total,
+                  SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END)     AS completed,
+                  SUM(CASE WHEN status='pending'   THEN 1 ELSE 0 END)     AS pending,
+                  SUM(CASE WHEN status='processing' THEN 1 ELSE 0 END)    AS processing,
+                  SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END)     AS failed,
+                  COALESCE(SUM(chunk_count), 0)                           AS chunks,
+                  COALESCE(SUM(entity_count), 0)                          AS entities,
+                  COALESCE(SUM(relationship_count), 0)                    AS relationships
+                FROM documents
+                """
+            ).fetchone()
+        return {k: row[k] for k in row.keys()}

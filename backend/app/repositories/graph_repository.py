@@ -302,6 +302,73 @@ class GraphRepository:
     def clear_all(self) -> None:
         self._run("MATCH (n) DETACH DELETE n")
 
+    # ---------- per-document ops ----------
+    def delete_document(self, file_name: str) -> None:
+        """Remove a single Document and everything attached to it that's not
+        shared with another doc: its chunks (always) and entities that no
+        other chunk references after this delete."""
+        # delete chunks (cascades HAS_ENTITY edges); entities then orphan-clean
+        self._run(
+            """
+            MATCH (d:Document {fileName: $fileName})
+            OPTIONAL MATCH (d)<-[:PART_OF]-(c:Chunk)
+            DETACH DELETE c, d
+            """,
+            fileName=file_name,
+        )
+        self._run(
+            """
+            MATCH (e:__Entity__)
+            WHERE NOT (e)<-[:HAS_ENTITY]-(:Chunk)
+            DETACH DELETE e
+            """
+        )
+
+    def list_document_entities(self, file_name: str, limit: int = 500) -> dict:
+        nodes = self._run(
+            """
+            MATCH (d:Document {fileName: $fileName})<-[:PART_OF]-(:Chunk)-[:HAS_ENTITY]->(e:__Entity__)
+            WITH DISTINCT e
+            RETURN e.id AS id,
+                   [l IN labels(e) WHERE l <> '__Entity__'] AS labels,
+                   e.description AS description
+            ORDER BY id
+            LIMIT $limit
+            """,
+            fileName=file_name,
+            limit=limit,
+        )
+        rels = self._run(
+            """
+            MATCH (d:Document {fileName: $fileName})<-[:PART_OF]-(:Chunk)-[:HAS_ENTITY]->(e1:__Entity__)
+            MATCH (e1)-[r]->(e2:__Entity__)
+            WHERE EXISTS {
+                MATCH (d)<-[:PART_OF]-(:Chunk)-[:HAS_ENTITY]->(e2)
+            }
+            RETURN DISTINCT e1.id AS source, type(r) AS type, e2.id AS target
+            LIMIT $limit
+            """,
+            fileName=file_name,
+            limit=limit,
+        )
+        return {
+            "nodes": [{"id": r["id"], "labels": r["labels"], "description": r.get("description")} for r in nodes],
+            "relationships": [{"source": r["source"], "type": r["type"], "target": r["target"]} for r in rels],
+        }
+
+    def document_chunks(self, file_name: str, limit: int = 200) -> list[dict]:
+        rows = self._run(
+            """
+            MATCH (d:Document {fileName: $fileName})<-[:PART_OF]-(c:Chunk)
+            RETURN c.id AS id, c.position AS position, c.length AS length, c.text AS text
+            ORDER BY c.position
+            LIMIT $limit
+            """,
+            fileName=file_name,
+            limit=limit,
+        )
+        return [dict(r) for r in rows]
+
     # ---------- internal ----------
     @staticmethod
     def _sanitize_label(s: str) -> str:
