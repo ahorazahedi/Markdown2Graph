@@ -109,6 +109,12 @@ CREATE TABLE IF NOT EXISTS ingest_events (
 );
 CREATE INDEX IF NOT EXISTS idx_ingest_events_run_id  ON ingest_events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_ingest_events_level   ON ingest_events(level);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,           -- JSON-encoded
+    updated_at  TEXT NOT NULL
+);
 """
 
 
@@ -308,6 +314,63 @@ class AppStateRepository:
             cur = c.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
             return (cur.rowcount or 0) > 0
 
+    # ---------------- bulk reset helpers ----------------
+    def count_documents(self) -> int:
+        with self._connect() as c:
+            return int(c.execute("SELECT COUNT(*) FROM documents").fetchone()[0])
+
+    def clear_documents(self) -> int:
+        with self._connect() as c:
+            cur = c.execute("DELETE FROM documents")
+            return int(cur.rowcount or 0)
+
+    def count_schema_versions(self) -> int:
+        with self._connect() as c:
+            return int(c.execute("SELECT COUNT(*) FROM schema_versions").fetchone()[0])
+
+    def has_schema(self) -> bool:
+        s = self.get_schema()
+        return bool(s["node_labels"] or s["triplets"] or s["extra"])
+
+    def clear_schema(self, *, drop_versions: bool = True) -> int:
+        """Reset active schema to empty. Returns count of removed versions."""
+        removed = 0
+        with self._connect() as c:
+            c.execute(
+                "UPDATE schemas SET node_labels = '[]', triplets = '[]', extra = '', "
+                "updated_at = ?, updated_by = NULL WHERE id = 1",
+                (_now(),),
+            )
+            if drop_versions:
+                cur = c.execute("DELETE FROM schema_versions")
+                removed = int(cur.rowcount or 0)
+        return removed
+
+    def count_runs(self) -> int:
+        with self._connect() as c:
+            try:
+                return int(c.execute("SELECT COUNT(*) FROM ingest_runs").fetchone()[0])
+            except sqlite3.OperationalError:
+                return 0
+
+    def clear_runs(self) -> int:
+        with self._connect() as c:
+            try:
+                cur = c.execute("DELETE FROM ingest_runs")
+                c.execute("DELETE FROM ingest_events")
+                return int(cur.rowcount or 0)
+            except sqlite3.OperationalError:
+                return 0
+
+    def count_custom_prompts(self) -> int:
+        with self._connect() as c:
+            return int(c.execute("SELECT COUNT(*) FROM prompts WHERE is_custom = 1").fetchone()[0])
+
+    def list_custom_prompt_keys(self) -> list[str]:
+        with self._connect() as c:
+            rows = c.execute("SELECT key FROM prompts WHERE is_custom = 1").fetchall()
+        return [r["key"] for r in rows]
+
     # ---------------- prompts ----------------
     def upsert_prompt_default(
         self,
@@ -391,6 +454,37 @@ class AppStateRepository:
             if (cur.rowcount or 0) == 0:
                 return None
         return self.get_prompt(key)
+
+    # ---------------- app_settings ----------------
+    def get_setting(self, key: str, default=None):
+        with self._connect() as c:
+            row = c.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+        if not row:
+            return default
+        try:
+            return json.loads(row["value"])
+        except Exception:
+            return default
+
+    def set_setting(self, key: str, value) -> None:
+        encoded = json.dumps(value, ensure_ascii=False, default=str)
+        with self._connect() as c:
+            c.execute(
+                "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (key, encoded, _now()),
+            )
+
+    def all_settings(self) -> dict:
+        with self._connect() as c:
+            rows = c.execute("SELECT key, value FROM app_settings").fetchall()
+        out = {}
+        for r in rows:
+            try:
+                out[r["key"]] = json.loads(r["value"])
+            except Exception:
+                out[r["key"]] = r["value"]
+        return out
 
     # ---------------- ingest jobs ----------------
     def create_run(self, run_id: str, *, kind: str = "ingest", scope: dict | None = None) -> None:

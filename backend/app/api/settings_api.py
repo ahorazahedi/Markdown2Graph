@@ -5,7 +5,10 @@ The PUT endpoints write to SQLite (app_settings table), clear the
 """
 from __future__ import annotations
 
+import logging
+import shutil
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -16,8 +19,26 @@ from neo4j.exceptions import Neo4jError
 from ..config import get_settings, reload_settings
 from ..extensions import neo4j_manager
 from ..repositories.settings_repository import SettingsRepository
+from ..repositories.app_state_repository import AppStateRepository
+from ..repositories.graph_repository import GraphRepository
+from ..repositories.llm_call_repository import LLMCallRepository
+from ..services.prompt_store import PromptStore
 
 bp = Blueprint("settings_api", __name__)
+log = logging.getLogger(__name__)
+
+# Targets supported by the reset endpoint. Order here is the run order.
+RESET_TARGETS = ("graph", "runs", "llm_logs", "documents", "schema", "prompts", "app_settings")
+
+# Selecting these implicitly drags in dependents (graph state would otherwise
+# desync from the SQLite ledger).
+CASCADE: dict[str, tuple[str, ...]] = {
+    "documents": ("graph", "runs"),
+    "schema": ("runs",),
+}
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+UPLOAD_ROOT = _REPO_ROOT / "backend" / "data" / "uploads"
 
 
 def _mask(key: str | None) -> str | None:
@@ -274,3 +295,117 @@ def list_models():
         return jsonify({"ok": True, "models": out})
     except httpx.HTTPError as exc:
         return jsonify({"ok": False, "error": str(exc), "models": []})
+
+
+# ---------------- reset ----------------
+
+
+@bp.get("/settings/reset/counts")
+def reset_counts():
+    """Live counts for each reset target. Drives the checkbox badges."""
+    state = AppStateRepository()
+    try:
+        gstats = GraphRepository().stats()
+        graph_nodes = int(gstats.get("documents", 0) or 0) + int(gstats.get("chunks", 0) or 0) + \
+                      int(gstats.get("entities", 0) or 0)
+    except Exception as exc:
+        log.warning("graph stats failed for reset counts: %s", exc)
+        graph_nodes = 0
+
+    try:
+        llm_stats = LLMCallRepository().stats()
+        llm_count = int(llm_stats.get("total", 0) or 0)
+    except Exception:
+        llm_count = 0
+
+    upload_files = 0
+    if UPLOAD_ROOT.exists():
+        try:
+            upload_files = sum(1 for _ in UPLOAD_ROOT.rglob("*") if _.is_file())
+        except Exception:
+            upload_files = 0
+
+    return jsonify(
+        {
+            "graph":        {"count": graph_nodes, "unit": "nodes"},
+            "runs":         {"count": state.count_runs(), "unit": "runs"},
+            "llm_logs":     {"count": llm_count, "unit": "calls"},
+            "documents":    {"count": state.count_documents(), "unit": "documents",
+                             "upload_files": upload_files},
+            "schema":       {"count": state.count_schema_versions(),
+                             "has_active": state.has_schema(),
+                             "unit": "versions"},
+            "prompts":      {"count": state.count_custom_prompts(), "unit": "customized"},
+            "app_settings": {"count": SettingsRepository().count(), "unit": "overrides"},
+        }
+    )
+
+
+def _expand_targets(selected: list[str]) -> list[str]:
+    seen: set[str] = set()
+    for t in selected:
+        if t not in RESET_TARGETS:
+            continue
+        seen.add(t)
+        for dep in CASCADE.get(t, ()):
+            seen.add(dep)
+    # preserve canonical run order
+    return [t for t in RESET_TARGETS if t in seen]
+
+
+@bp.post("/settings/reset")
+def reset():
+    body = request.get_json(force=True) or {}
+    raw_targets = body.get("targets") or []
+    if not isinstance(raw_targets, list):
+        return jsonify({"error": "targets must be a list"}), 400
+
+    targets = _expand_targets([str(t) for t in raw_targets])
+    if not targets:
+        return jsonify({"error": "no valid targets"}), 400
+
+    state = AppStateRepository()
+    cleared: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+
+    for tgt in targets:
+        try:
+            if tgt == "graph":
+                GraphRepository().clear_all()
+                cleared[tgt] = "ok"
+            elif tgt == "runs":
+                cleared[tgt] = state.clear_runs()
+            elif tgt == "llm_logs":
+                cleared[tgt] = LLMCallRepository().clear()
+            elif tgt == "documents":
+                removed = state.clear_documents()
+                files_removed = 0
+                if UPLOAD_ROOT.exists():
+                    for child in UPLOAD_ROOT.iterdir():
+                        try:
+                            if child.is_dir():
+                                shutil.rmtree(child, ignore_errors=True)
+                            else:
+                                child.unlink(missing_ok=True)
+                            files_removed += 1
+                        except Exception as exc:
+                            log.warning("failed removing %s: %s", child, exc)
+                cleared[tgt] = {"rows": removed, "staging": files_removed}
+            elif tgt == "schema":
+                cleared[tgt] = state.clear_schema(drop_versions=True)
+            elif tgt == "prompts":
+                keys = state.list_custom_prompt_keys()
+                store = PromptStore()
+                done = 0
+                for k in keys:
+                    if store.reset(k):
+                        done += 1
+                cleared[tgt] = done
+            elif tgt == "app_settings":
+                cleared[tgt] = SettingsRepository().clear()
+                reload_settings()
+        except Exception as exc:
+            log.exception("reset target %s failed", tgt)
+            errors[tgt] = str(exc)
+
+    return jsonify({"ok": not errors, "targets": targets, "cleared": cleared, "errors": errors})

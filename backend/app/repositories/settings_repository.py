@@ -101,3 +101,12 @@ class SettingsRepository:
             return
         with self._connect() as c:
             c.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+
+    def count(self) -> int:
+        with self._connect() as c:
+            return int(c.execute("SELECT COUNT(*) FROM app_settings").fetchone()[0])
+
+    def clear(self) -> int:
+        with self._connect() as c:
+            cur = c.execute("DELETE FROM app_settings")
+            return int(cur.rowcount or 0)

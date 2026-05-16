@@ -374,14 +374,138 @@ function MessagesView({ messages }: { messages: any[] }) {
 }
 
 function Block({ label, body }: { label: string; body: string }) {
+  const parsed = useMemo(() => tryParseJson(body), [body]);
+  const isJson = parsed !== _NONE;
+  const [pretty, setPretty] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  const displayed = useMemo(() => {
+    if (isJson && pretty) return JSON.stringify(parsed, null, 2);
+    return body;
+  }, [isJson, pretty, parsed, body]);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(displayed);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
+
   return (
     <div className="space-y-1">
-      <div className="text-2xs uppercase tracking-wider text-muted-foreground">{label}</div>
-      <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-sm border border-border bg-muted/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground">
-        {body}
-      </pre>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-2xs uppercase tracking-wider text-muted-foreground">{label}</span>
+          {isJson && (
+            <span className="text-2xs uppercase tracking-wider text-[hsl(var(--success))]">
+              json
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          {isJson && (
+            <button
+              onClick={() => setPretty((v) => !v)}
+              className="rounded-sm border border-border px-2 py-0.5 text-2xs text-muted-foreground hover:bg-accent"
+            >
+              {pretty ? "raw" : "pretty"}
+            </button>
+          )}
+          <button
+            onClick={copy}
+            className="rounded-sm border border-border px-2 py-0.5 text-2xs text-muted-foreground hover:bg-accent"
+          >
+            {copied ? "copied" : "copy"}
+          </button>
+        </div>
+      </div>
+      {isJson && pretty ? (
+        <pre className="overflow-x-auto rounded-sm border border-border bg-muted/30 px-3 py-2 font-mono text-xs leading-relaxed">
+          <JsonHighlight value={parsed} />
+        </pre>
+      ) : (
+        <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-sm border border-border bg-muted/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground">
+          {displayed}
+        </pre>
+      )}
     </div>
   );
+}
+
+/** Sentinel returned by `tryParseJson` when input isn't JSON. */
+const _NONE: unique symbol = Symbol("not-json");
+function tryParseJson(s: string): any {
+  if (typeof s !== "string") return _NONE;
+  const trimmed = s.trim();
+  if (!trimmed) return _NONE;
+  // Common case: response wrapped in ```json ... ``` fences.
+  let body = trimmed;
+  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+  if (fence) body = fence[1];
+  // Must start with { or [ to even bother.
+  if (!/^[{[]/.test(body)) return _NONE;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return _NONE;
+  }
+}
+
+/** Tokenized JSON renderer. Color tokens for keys, strings, numbers,
+ *  booleans, null. Indented, with key + value on the same line. */
+function JsonHighlight({ value, indent = 0 }: { value: any; indent?: number }) {
+  const pad = (n: number) => " ".repeat(n * 2);
+
+  if (value === null) return <span className="text-muted-foreground">null</span>;
+  if (typeof value === "boolean")
+    return <span className="text-[hsl(var(--warning))]">{String(value)}</span>;
+  if (typeof value === "number")
+    return <span className="text-[hsl(var(--success))]">{value}</span>;
+  if (typeof value === "string")
+    return <span className="text-foreground">{JSON.stringify(value)}</span>;
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="text-muted-foreground">[]</span>;
+    return (
+      <span>
+        <span className="text-muted-foreground">[</span>
+        {"\n"}
+        {value.map((v, i) => (
+          <span key={i}>
+            {pad(indent + 1)}
+            <JsonHighlight value={v} indent={indent + 1} />
+            {i < value.length - 1 && <span className="text-muted-foreground">,</span>}
+            {"\n"}
+          </span>
+        ))}
+        {pad(indent)}<span className="text-muted-foreground">]</span>
+      </span>
+    );
+  }
+
+  if (typeof value === "object") {
+    const keys = Object.keys(value);
+    if (keys.length === 0) return <span className="text-muted-foreground">{`{}`}</span>;
+    return (
+      <span>
+        <span className="text-muted-foreground">{`{`}</span>
+        {"\n"}
+        {keys.map((k, i) => (
+          <span key={k}>
+            {pad(indent + 1)}
+            <span className="text-primary">{JSON.stringify(k)}</span>
+            <span className="text-muted-foreground">: </span>
+            <JsonHighlight value={value[k]} indent={indent + 1} />
+            {i < keys.length - 1 && <span className="text-muted-foreground">,</span>}
+            {"\n"}
+          </span>
+        ))}
+        {pad(indent)}<span className="text-muted-foreground">{`}`}</span>
+      </span>
+    );
+  }
+  return <span>{String(value)}</span>;
 }
 
 function Meta({ k, v }: { k: string; v: React.ReactNode }) {

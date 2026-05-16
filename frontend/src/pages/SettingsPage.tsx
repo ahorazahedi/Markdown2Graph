@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Brain, CheckCircle2, Database, Eye, EyeOff, Loader2, Save, XCircle, Zap } from "lucide-react";
+import {
+  AlertTriangle, Brain, CheckCircle2, Database, Eye, EyeOff, Loader2, RefreshCw,
+  Save, Trash2, XCircle, Zap,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,14 +12,42 @@ import { SearchableSelect, SearchableOption } from "@/components/ui/searchable-s
 import { PageHeader } from "@/components/PageHeader";
 import { PageContainer } from "@/components/PageContainer";
 import { cn } from "@/lib/utils";
-import { api, ModelOption, SettingsView } from "@/lib/api";
+import { api, ModelOption, ResetCounts, ResetTarget, SettingsView } from "@/lib/api";
+import { confirm } from "@/lib/confirm";
+import { RuntimeSettingsPanel } from "@/components/RuntimeSettingsPanel";
 
-type Section = "llm" | "neo4j";
+type Section = "llm" | "neo4j" | "pipeline" | "reset";
 
 const SECTIONS: { key: Section; label: string; icon: any; hint: string }[] = [
-  { key: "llm",   label: "LLM & Embeddings", icon: Brain,    hint: "Provider, model, key" },
-  { key: "neo4j", label: "Neo4j",            icon: Database, hint: "Graph connection" },
+  { key: "llm",      label: "LLM & Embeddings", icon: Brain,    hint: "Provider, model, key" },
+  { key: "neo4j",    label: "Neo4j",            icon: Database, hint: "Graph connection" },
+  { key: "pipeline", label: "Pipeline",         icon: Brain,    hint: "Retries & extraction tuning" },
+  { key: "reset",    label: "Reset / Cleanup",  icon: Trash2,   hint: "Wipe data, fresh setup" },
 ];
+
+// UI metadata for each reset target.
+interface ResetTargetMeta {
+  key: ResetTarget;
+  label: string;
+  description: string;
+  destructive: boolean;       // require typed confirmation
+  inPreset: boolean;          // included in "Fresh setup"
+}
+
+const RESET_META: ResetTargetMeta[] = [
+  { key: "graph",        label: "Neo4j graph",       description: "Delete every node and relationship in Neo4j.",                                destructive: true,  inPreset: true  },
+  { key: "documents",    label: "Documents",         description: "Drop document rows and clear staging files. Cascades to graph and runs.",     destructive: true,  inPreset: true  },
+  { key: "schema",       label: "Schema",            description: "Reset active schema to empty and drop version history. Cascades to runs.",    destructive: false, inPreset: true  },
+  { key: "runs",         label: "Ingest runs",       description: "Drop ingest_runs and ingest_events tables.",                                  destructive: false, inPreset: true  },
+  { key: "llm_logs",     label: "LLM call audit log", description: "Drop every recorded LLM request and response.",                              destructive: false, inPreset: true  },
+  { key: "prompts",      label: "Customized prompts", description: "Reset every is_custom prompt back to its on-disk default.",                  destructive: false, inPreset: true  },
+  { key: "app_settings", label: "App settings",      description: "Drop UI-configured LLM/Neo4j overrides. Backend falls back to .env values.",  destructive: false, inPreset: false },
+];
+
+const CASCADE: Record<string, ResetTarget[]> = {
+  documents: ["graph", "runs"],
+  schema:    ["runs"],
+};
 
 type TestResult = {
   ok: boolean;
@@ -67,6 +98,13 @@ export function SettingsPage() {
   const [testNeoResult, setTestNeoResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState<{ llm?: boolean; emb?: boolean; neo?: boolean }>({});
   const [toast, setToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+
+  // reset section state
+  const [resetCounts, setResetCounts] = useState<ResetCounts | null>(null);
+  const [resetSel, setResetSel] = useState<Set<ResetTarget>>(new Set());
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetCountsLoading, setResetCountsLoading] = useState(false);
+  const [lastReset, setLastReset] = useState<{ targets: ResetTarget[]; cleared: Record<string, any>; errors: Record<string, string> } | null>(null);
 
   const loadView = async () => {
     try {
@@ -216,17 +254,123 @@ export function SettingsPage() {
     }
   };
 
+  // ---------- reset handlers ----------
+  const loadResetCounts = async () => {
+    setResetCountsLoading(true);
+    try {
+      setResetCounts(await api.resetCounts());
+    } catch (e: any) {
+      flashToast({ kind: "err", msg: `Counts failed: ${e?.message ?? e}` });
+    } finally {
+      setResetCountsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (section === "reset" && !resetCounts) {
+      loadResetCounts();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section]);
+
+  // expanded selection (after cascade)
+  const effectiveSel = useMemo<Set<ResetTarget>>(() => {
+    const out = new Set<ResetTarget>(resetSel);
+    for (const t of resetSel) {
+      for (const dep of CASCADE[t] || []) out.add(dep);
+    }
+    return out;
+  }, [resetSel]);
+
+  const isForced = (t: ResetTarget) => effectiveSel.has(t) && !resetSel.has(t);
+
+  const toggleTarget = (t: ResetTarget) => {
+    setResetSel((prev) => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  };
+
+  const applyPreset = () => {
+    const next = new Set<ResetTarget>(
+      RESET_META.filter((m) => m.inPreset).map((m) => m.key),
+    );
+    setResetSel(next);
+  };
+
+  const clearSelection = () => setResetSel(new Set());
+
+  const runReset = async () => {
+    const targets = Array.from(effectiveSel);
+    if (targets.length === 0) return;
+
+    const destructive = targets.some(
+      (t) => RESET_META.find((m) => m.key === t)?.destructive,
+    );
+    const ok = await confirm({
+      title: "Run reset?",
+      description: destructive
+        ? `Wipes ${targets.length} target(s): ${targets.join(", ")}. This cannot be undone.`
+        : `Will reset: ${targets.join(", ")}.`,
+      confirmText: "Run reset",
+      variant: "destructive",
+    });
+    if (!ok) return;
+
+    setResetBusy(true);
+    setLastReset(null);
+    try {
+      const result = await api.runReset(targets);
+      setLastReset({
+        targets: result.targets,
+        cleared: result.cleared,
+        errors: result.errors,
+      });
+      setResetSel(new Set());
+      await loadResetCounts();
+      if (Object.keys(result.errors || {}).length > 0) {
+        flashToast({ kind: "err", msg: `Reset completed with errors.` });
+      } else {
+        flashToast({ kind: "ok", msg: `Reset done: ${result.targets.join(", ")}.` });
+      }
+      // refresh view (app_settings reset may have changed it)
+      if (targets.includes("app_settings")) await loadView();
+    } catch (e: any) {
+      flashToast({ kind: "err", msg: e?.message ?? String(e) });
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
   const headerActions =
     section === "llm" ? (
       <Button size="sm" onClick={saveLLM} disabled={savingLLM}>
         {savingLLM ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
         Save LLM settings
       </Button>
-    ) : (
+    ) : section === "neo4j" ? (
       <Button size="sm" onClick={saveNeo} disabled={savingNeo}>
         {savingNeo ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
         Save Neo4j settings
       </Button>
+    ) : (
+      <>
+        <Button variant="outline" size="sm" onClick={loadResetCounts} disabled={resetCountsLoading}>
+          <RefreshCw className={resetCountsLoading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+          Refresh counts
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={runReset}
+          disabled={resetBusy || effectiveSel.size === 0}
+        >
+          {resetBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+          Run reset ({effectiveSel.size})
+        </Button>
+      </>
     );
 
   if (loading) {
@@ -483,6 +627,107 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+        </div>
+        )}
+
+        {section === "pipeline" && <RuntimeSettingsPanel />}
+
+        {section === "reset" && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <AlertTriangle className="h-4 w-4 text-[hsl(var(--warning))]" />
+                Reset / Cleanup
+              </CardTitle>
+              <CardDescription>
+                Wipe selected stores so you can start over. Cascading dependencies are checked automatically. This cannot be undone.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="outline" size="sm" onClick={applyPreset}>
+                  Select "Fresh setup"
+                </Button>
+                <Button variant="ghost" size="sm" onClick={clearSelection}
+                        disabled={resetSel.size === 0}>
+                  Clear selection
+                </Button>
+                <span className="ml-auto text-2xs text-muted-foreground">
+                  {effectiveSel.size} target{effectiveSel.size === 1 ? "" : "s"} will run
+                </span>
+              </div>
+
+              <ul className="divide-y divide-border rounded-sm border border-border">
+                {RESET_META.map((m) => {
+                  const cnt = resetCounts?.[m.key];
+                  const checked = effectiveSel.has(m.key);
+                  const forced = isForced(m.key);
+                  const cascades = CASCADE[m.key];
+                  return (
+                    <li key={m.key} className="flex items-start gap-3 px-3 py-2.5">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 h-4 w-4 accent-foreground"
+                        checked={checked}
+                        disabled={forced || resetBusy}
+                        onChange={() => toggleTarget(m.key)}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-medium">{m.label}</span>
+                          {m.destructive && (
+                            <Badge variant="destructive" className="text-2xs">destructive</Badge>
+                          )}
+                          {forced && (
+                            <Badge variant="warning" className="text-2xs">auto (cascade)</Badge>
+                          )}
+                          <code className="ml-auto rounded-sm bg-muted px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
+                            {cnt ? `${cnt.count} ${cnt.unit}` : resetCountsLoading ? "…" : "—"}
+                          </code>
+                        </div>
+                        <p className="mt-0.5 text-xs text-muted-foreground">{m.description}</p>
+                        {cascades && cascades.length > 0 && (
+                          <p className="mt-0.5 text-2xs text-muted-foreground">
+                            Cascades to: <span className="font-mono">{cascades.join(", ")}</span>
+                          </p>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </CardContent>
+          </Card>
+
+          {lastReset && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Last reset result</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-1 text-sm">
+                  {lastReset.targets.map((t) => {
+                    const err = lastReset.errors[t];
+                    const cleared = lastReset.cleared[t];
+                    return (
+                      <li key={t} className="flex items-center gap-2 font-mono text-xs">
+                        {err ? (
+                          <XCircle className="h-3.5 w-3.5 text-destructive" />
+                        ) : (
+                          <CheckCircle2 className="h-3.5 w-3.5 text-[hsl(var(--success))]" />
+                        )}
+                        <span className="w-36">{t}</span>
+                        <span className="text-muted-foreground">
+                          {err ? err : JSON.stringify(cleared)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </CardContent>
+            </Card>
+          )}
         </div>
         )}
         </div>

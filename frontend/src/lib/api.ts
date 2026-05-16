@@ -251,6 +251,14 @@ export const api = {
       `/api/settings/models?${q.toString()}`,
     );
   },
+  resetCounts: () => jsonFetch<ResetCounts>("/api/settings/reset/counts"),
+  runReset: (targets: ResetTarget[]) =>
+    jsonFetch<{
+      ok: boolean;
+      targets: ResetTarget[];
+      cleared: Record<string, any>;
+      errors: Record<string, string>;
+    }>("/api/settings/reset", { method: "POST", body: JSON.stringify({ targets }) }),
 
   // prompts
   listPrompts: () => jsonFetch<{ items: PromptRow[] }>("/api/prompts"),
@@ -283,7 +291,26 @@ export const api = {
       `/api/jobs/${id}/events?${q.toString()}`,
     );
   },
+
+  // runtime knobs (extraction retry etc.) — distinct from /api/settings (connection)
+  listRuntime: () => jsonFetch<{ items: RuntimeSettingSpec[] }>("/api/runtime"),
+  putRuntime: (body: Record<string, any>) =>
+    jsonFetch<{ updated: Record<string, any>; items: RuntimeSettingSpec[] }>("/api/runtime", {
+      method: "PUT", body: JSON.stringify(body),
+    }),
 };
+
+export interface RuntimeSettingSpec {
+  key: string;
+  kind: "int" | "float" | "bool" | "str";
+  default: any;
+  value: any;
+  label: string;
+  description: string;
+  min: number | null;
+  max: number | null;
+  group: string;
+}
 
 export interface JobRun {
   id: string;
@@ -353,6 +380,24 @@ export interface ModelOption {
   owned_by: string;
   kind: "chat" | "embedding";
 }
+
+export type ResetTarget =
+  | "graph"
+  | "runs"
+  | "llm_logs"
+  | "documents"
+  | "schema"
+  | "prompts"
+  | "app_settings";
+
+export interface ResetCountEntry {
+  count: number;
+  unit: string;
+  has_active?: boolean;
+  upload_files?: number;
+}
+
+export type ResetCounts = Record<ResetTarget, ResetCountEntry>;
 
 export interface PromptRow {
   key: string;

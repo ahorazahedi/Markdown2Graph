@@ -235,6 +235,12 @@ class IngestionPipeline:
 
         # extract per-window so the progress bar advances continuously over
         # potentially hundreds of LLM calls per document
+        from .settings_service import SettingsService
+        rs = SettingsService()
+        max_retries = int(rs.get("extraction_retry_count"))
+        backoff0 = float(rs.get("extraction_retry_backoff_seconds"))
+        min_nodes = int(rs.get("extraction_min_nodes_for_success"))
+
         ent_count = 0
         rel_count = 0
         for w_idx, window in enumerate(windows):
@@ -242,24 +248,70 @@ class IngestionPipeline:
             chunk_id = window[0].id
             lc_docs = [Document(page_content=text,
                                 metadata={"chunk_id": chunk_id, "file_name": doc.file_name})]
-            try:
-                graph_docs = self.extractor.extract(lc_docs)
-                e, r = self.repo.write_graph_documents(doc.file_name, graph_docs)
-                ent_count += e
-                rel_count += r
-            except Exception as ex:
-                log.warning("chunk %s extraction failed: %s", chunk_id, ex)
-                _emit(
-                    0.30 + 0.65 * (w_idx + 1) / max(1, len(windows)),
-                    f"{doc.file_name}: chunk {w_idx + 1}/{len(windows)} failed — {ex}",
-                    {"level": "error", "chunk_id": chunk_id,
-                     "chunk_index": w_idx + 1, "chunks_total": len(windows),
-                     "error": str(ex)},
-                )
+            attempts = max_retries + 1
+            last_err: str | None = None
+            e = r = 0
+            succeeded = False
+
+            import time as _time
+            for attempt in range(1, attempts + 1):
+                try:
+                    graph_docs = self.extractor.extract(lc_docs)
+                    nodes_seen = sum(len(getattr(gd, "nodes", []) or []) for gd in graph_docs)
+                    # heuristic: if extractor returns nothing meaningful, treat
+                    # as transient failure and retry. The LLM occasionally
+                    # produces empty structured-output on flaky JSON parses.
+                    if min_nodes > 0 and nodes_seen < min_nodes and attempt < attempts:
+                        last_err = (
+                            f"only {nodes_seen} nodes returned (< min {min_nodes})"
+                        )
+                        _emit(
+                            0.30 + 0.65 * (w_idx + 0.5) / max(1, len(windows)),
+                            f"{doc.file_name}: chunk {w_idx + 1}/{len(windows)} retry "
+                            f"{attempt}/{max_retries} — {last_err}",
+                            {"level": "warn", "chunk_id": chunk_id,
+                             "chunk_index": w_idx + 1, "chunks_total": len(windows),
+                             "attempt": attempt, "max_retries": max_retries},
+                        )
+                        _time.sleep(backoff0 * (2 ** (attempt - 1)))
+                        continue
+                    e, r = self.repo.write_graph_documents(doc.file_name, graph_docs)
+                    ent_count += e
+                    rel_count += r
+                    succeeded = True
+                    break
+                except Exception as ex:
+                    last_err = f"{type(ex).__name__}: {ex}"
+                    log.warning("chunk %s attempt %d/%d failed: %s",
+                                chunk_id, attempt, attempts, last_err)
+                    if attempt < attempts:
+                        _emit(
+                            0.30 + 0.65 * (w_idx + 0.5) / max(1, len(windows)),
+                            f"{doc.file_name}: chunk {w_idx + 1}/{len(windows)} retry "
+                            f"{attempt}/{max_retries} — {last_err}",
+                            {"level": "warn", "chunk_id": chunk_id,
+                             "chunk_index": w_idx + 1, "chunks_total": len(windows),
+                             "attempt": attempt, "max_retries": max_retries,
+                             "error": last_err},
+                        )
+                        _time.sleep(backoff0 * (2 ** (attempt - 1)))
+                    else:
+                        _emit(
+                            0.30 + 0.65 * (w_idx + 1) / max(1, len(windows)),
+                            f"{doc.file_name}: chunk {w_idx + 1}/{len(windows)} "
+                            f"FAILED after {attempts} attempts — {last_err}",
+                            {"level": "error", "chunk_id": chunk_id,
+                             "chunk_index": w_idx + 1, "chunks_total": len(windows),
+                             "error": last_err, "attempts": attempts},
+                        )
+
+            if not succeeded:
                 continue
+
             _emit(
                 0.30 + 0.65 * (w_idx + 1) / max(1, len(windows)),
-                f"{doc.file_name}: chunk {w_idx + 1}/{len(windows)} → +{e} entities, +{r} rels",
+                f"{doc.file_name}: chunk {w_idx + 1}/{len(windows)} → +{e} entities, +{r} rels"
+                + (f" (after retries)" if attempts > 1 and last_err else ""),
                 {"chunk_id": chunk_id, "chunk_index": w_idx + 1,
                  "chunks_total": len(windows), "entities": e, "relationships": r},
             )
