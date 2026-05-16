@@ -1,25 +1,53 @@
 import { useEffect, useState } from "react";
-import { Database, ExternalLink, RefreshCw, Trash2 } from "lucide-react";
+import { ExternalLink, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
-import { api, AppConfig } from "@/lib/api";
+import { GraphViewer } from "@/components/GraphViewer";
+import { api, AppConfig, DocumentRow, GraphExplore } from "@/lib/api";
 
 export function GraphPage({ config }: { config: AppConfig | null }) {
   const [stats, setStats] = useState<Record<string, number> | null>(null);
   const [schema, setSchema] = useState<{ labels: string[]; relationship_types: string[] } | null>(null);
+  const [explore, setExplore] = useState<GraphExplore | null>(null);
+  const [docs, setDocs] = useState<DocumentRow[]>([]);
+  const [filterFile, setFilterFile] = useState("");
+  const [filterLabel, setFilterLabel] = useState("");
+  const [limit, setLimit] = useState(150);
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
     setBusy(true);
     try {
-      const [s, sc] = await Promise.all([api.stats(), api.graphSchema()]);
+      const [s, sc, d] = await Promise.all([
+        api.stats(),
+        api.graphSchema(),
+        api.listDocuments().then((r) => r.items).catch(() => []),
+      ]);
       setStats(s);
       setSchema(sc);
+      setDocs(d);
     } finally { setBusy(false); }
   };
+
+  const loadExplore = async () => {
+    setBusy(true);
+    try {
+      const r = await api.exploreGraph({
+        limit,
+        file_name: filterFile || undefined,
+        label: filterLabel || undefined,
+      });
+      setExplore(r);
+    } finally { setBusy(false); }
+  };
+
   useEffect(() => { refresh(); }, []);
+  useEffect(() => { loadExplore(); /* initial */ }, []);
 
   const browserHref = config?.neo4j.uri.replace(/^bolt:\/\//, "http://").replace(/:7687/, ":7474");
 
@@ -36,13 +64,13 @@ export function GraphPage({ config }: { config: AppConfig | null }) {
             {browserHref && (
               <a href={browserHref} target="_blank" rel="noreferrer"
                  className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-border px-3 text-sm hover:bg-accent">
-                <ExternalLink className="h-3.5 w-3.5" /> Open Browser
+                <ExternalLink className="h-3.5 w-3.5" /> Open Neo4j Browser
               </a>
             )}
             <Button variant="destructive" size="sm"
                     onClick={async () => {
                       if (!confirm("Delete the entire graph? This wipes every node and relationship.")) return;
-                      await api.clearGraph(); refresh();
+                      await api.clearGraph(); refresh(); loadExplore();
                     }}>
               <Trash2 className="h-3.5 w-3.5" /> Clear
             </Button>
@@ -50,43 +78,107 @@ export function GraphPage({ config }: { config: AppConfig | null }) {
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        {[
-          ["documents", "Documents"],
-          ["chunks", "Chunks"],
-          ["entities", "Entities"],
-          ["entity_relationships", "Entity rels"],
-          ["has_entity_relationships", "HAS_ENTITY"],
-        ].map(([k, label]) => (
-          <div key={k} className="rounded-sm border border-border bg-card px-3 py-2">
-            <div className="text-2xs uppercase tracking-wider text-muted-foreground">{label as string}</div>
-            <div className="text-xl font-semibold tabular-nums tracking-tightish">{stats?.[k as string] ?? "—"}</div>
-          </div>
-        ))}
-      </div>
+      <Tabs defaultValue="viewer">
+        <TabsList className="mb-4">
+          <TabsTrigger value="viewer">Viewer</TabsTrigger>
+          <TabsTrigger value="stats">Stats</TabsTrigger>
+        </TabsList>
 
-      {schema && (
-        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+        {/* ---- viewer ---- */}
+        <TabsContent value="viewer" className="space-y-3">
           <Card>
-            <CardHeader>
-              <CardTitle>Node labels</CardTitle>
-              <CardDescription>{schema.labels.length} labels in graph</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-wrap gap-1.5">
-              {schema.labels.map((l) => <Badge key={l} variant="outline" className="text-xs">{l}</Badge>)}
+            <CardContent className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1">
+                <Label className="text-2xs">File</Label>
+                <select
+                  className="h-8 rounded-sm border border-border bg-background px-2 text-sm"
+                  value={filterFile}
+                  onChange={(e) => setFilterFile(e.target.value)}
+                >
+                  <option value="">All</option>
+                  {docs.map((d) => <option key={d.id} value={d.file_name}>{d.file_name}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-2xs">Label</Label>
+                <select
+                  className="h-8 rounded-sm border border-border bg-background px-2 text-sm"
+                  value={filterLabel}
+                  onChange={(e) => setFilterLabel(e.target.value)}
+                >
+                  <option value="">All</option>
+                  {schema?.labels.filter((l) => !["Chunk", "Document", "__Entity__", "__Community__"].includes(l))
+                    .map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-2xs">Node limit</Label>
+                <Input type="number" className="w-24" min={10} max={1000} value={limit}
+                       onChange={(e) => setLimit(Math.max(10, Math.min(1000, parseInt(e.target.value || "150", 10))))} />
+              </div>
+              <Button size="sm" onClick={loadExplore} disabled={busy}>Apply</Button>
+              {explore && (
+                <span className="ml-auto text-xs text-muted-foreground">
+                  {explore.nodes.length} nodes · {explore.relationships.length} edges
+                </span>
+              )}
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Relationship types</CardTitle>
-              <CardDescription>{schema.relationship_types.length} types</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-wrap gap-1.5">
-              {schema.relationship_types.map((l) => <Badge key={l} variant="secondary" className="text-xs">{l}</Badge>)}
-            </CardContent>
-          </Card>
-        </div>
-      )}
+
+          {explore && explore.nodes.length === 0
+            ? (
+              <Card>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">
+                    No entities to display. Ingest some documents first.
+                  </p>
+                </CardContent>
+              </Card>
+            )
+            : explore && <GraphViewer data={explore} onRefresh={loadExplore} />}
+        </TabsContent>
+
+        {/* ---- stats ---- */}
+        <TabsContent value="stats" className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            {[
+              ["documents", "Documents"],
+              ["chunks", "Chunks"],
+              ["entities", "Entities"],
+              ["entity_relationships", "Entity rels"],
+              ["has_entity_relationships", "HAS_ENTITY"],
+            ].map(([k, label]) => (
+              <div key={k} className="rounded-sm border border-border bg-card px-3 py-2">
+                <div className="text-2xs uppercase tracking-wider text-muted-foreground">{label as string}</div>
+                <div className="text-xl font-semibold tabular-nums tracking-tightish">{stats?.[k as string] ?? "—"}</div>
+              </div>
+            ))}
+          </div>
+
+          {schema && (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Node labels</CardTitle>
+                  <CardDescription>{schema.labels.length} labels in graph</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap gap-1.5">
+                  {schema.labels.map((l) => <Badge key={l} variant="outline" className="text-xs">{l}</Badge>)}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Relationship types</CardTitle>
+                  <CardDescription>{schema.relationship_types.length} types</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap gap-1.5">
+                  {schema.relationship_types.map((l) => <Badge key={l} variant="secondary" className="text-xs">{l}</Badge>)}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </>
   );
 }

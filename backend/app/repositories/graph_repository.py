@@ -356,6 +356,101 @@ class GraphRepository:
             "relationships": [{"source": r["source"], "type": r["type"], "target": r["target"]} for r in rels],
         }
 
+    # ---------- explorer ----------
+    def explore(self, limit_nodes: int = 200, file_name: str | None = None,
+                label: str | None = None) -> dict:
+        """Return a bounded sample of entity nodes + their relationships, with
+        document provenance attached to each entity (which fileName(s) they
+        came from). Used by the frontend graph viewer."""
+        if file_name:
+            nodes = self._run(
+                """
+                MATCH (d:Document {fileName: $fileName})<-[:PART_OF]-(:Chunk)-[:HAS_ENTITY]->(e:__Entity__)
+                WITH DISTINCT e
+                RETURN elementId(e) AS element_id,
+                       e.id AS id,
+                       [l IN labels(e) WHERE l <> '__Entity__'] AS labels,
+                       e.description AS description,
+                       properties(e) AS properties
+                LIMIT $limit
+                """,
+                fileName=file_name, limit=limit_nodes,
+            )
+        elif label:
+            nodes = self._run(
+                f"""
+                MATCH (e:`{label}`:`__Entity__`)
+                RETURN elementId(e) AS element_id,
+                       e.id AS id,
+                       [l IN labels(e) WHERE l <> '__Entity__'] AS labels,
+                       e.description AS description,
+                       properties(e) AS properties
+                LIMIT $limit
+                """,
+                limit=limit_nodes,
+            )
+        else:
+            nodes = self._run(
+                """
+                MATCH (e:__Entity__)
+                RETURN elementId(e) AS element_id,
+                       e.id AS id,
+                       [l IN labels(e) WHERE l <> '__Entity__'] AS labels,
+                       e.description AS description,
+                       properties(e) AS properties
+                LIMIT $limit
+                """,
+                limit=limit_nodes,
+            )
+        ids = [n["element_id"] for n in nodes]
+        rels = []
+        sources_by_node: dict[str, list[str]] = {}
+        if ids:
+            rels = self._run(
+                """
+                MATCH (a:__Entity__)-[r]->(b:__Entity__)
+                WHERE elementId(a) IN $ids AND elementId(b) IN $ids
+                RETURN elementId(r) AS element_id,
+                       elementId(a) AS source,
+                       elementId(b) AS target,
+                       type(r) AS type,
+                       properties(r) AS properties
+                """,
+                ids=ids,
+            )
+            src_rows = self._run(
+                """
+                MATCH (e:__Entity__)<-[:HAS_ENTITY]-(:Chunk)-[:PART_OF]->(d:Document)
+                WHERE elementId(e) IN $ids
+                RETURN elementId(e) AS element_id, collect(DISTINCT d.fileName) AS files
+                """,
+                ids=ids,
+            )
+            sources_by_node = {r["element_id"]: r["files"] for r in src_rows}
+
+        nodes_out = []
+        for n in nodes:
+            props = {k: v for k, v in (n.get("properties") or {}).items() if k != "embedding"}
+            nodes_out.append({
+                "element_id": n["element_id"],
+                "id": n["id"],
+                "labels": n["labels"],
+                "description": n["description"],
+                "properties": props,
+                "sources": sources_by_node.get(n["element_id"], []),
+            })
+        rels_out = [
+            {
+                "element_id": r["element_id"],
+                "source": r["source"],
+                "target": r["target"],
+                "type": r["type"],
+                "properties": {k: v for k, v in (r.get("properties") or {}).items()},
+            }
+            for r in rels
+        ]
+        return {"nodes": nodes_out, "relationships": rels_out}
+
     def document_chunks(self, file_name: str, limit: int = 200) -> list[dict]:
         rows = self._run(
             """

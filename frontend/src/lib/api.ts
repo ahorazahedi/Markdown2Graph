@@ -119,6 +119,26 @@ export interface EntityGraph {
   relationships: { source: string; type: string; target: string }[];
 }
 
+export interface GraphExploreNode {
+  element_id: string;
+  id: string;
+  labels: string[];
+  description: string | null;
+  properties: Record<string, any>;
+  sources: string[]; // document fileNames this entity came from
+}
+export interface GraphExploreRel {
+  element_id: string;
+  source: string;
+  target: string;
+  type: string;
+  properties: Record<string, any>;
+}
+export interface GraphExplore {
+  nodes: GraphExploreNode[];
+  relationships: GraphExploreRel[];
+}
+
 // ---------- client ----------
 export const api = {
   health: () => jsonFetch<{ status: string; neo4j: string }>("/api/health"),
@@ -172,6 +192,13 @@ export const api = {
   stats: () => jsonFetch<Record<string, number>>("/api/graph/stats"),
   graphSchema: () => jsonFetch<{ labels: string[]; relationship_types: string[] }>("/api/graph/schema"),
   clearGraph: () => jsonFetch<{ status: string; cleared: boolean }>("/api/graph", { method: "DELETE" }),
+  exploreGraph: (params: { limit?: number; file_name?: string; label?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.limit != null) q.set("limit", String(params.limit));
+    if (params.file_name) q.set("file_name", params.file_name);
+    if (params.label) q.set("label", params.label);
+    return jsonFetch<GraphExplore>(`/api/graph/explore?${q.toString()}`);
+  },
 
   // llm audit
   llmCalls: (params: { tag?: string; status?: string; limit?: number; offset?: number } = {}) => {
@@ -188,4 +215,30 @@ export const api = {
   llmTags: () => jsonFetch<{ tags: string[] }>("/api/llm-calls/tags"),
   llmStats: () => jsonFetch<LLMLogStats>("/api/llm-calls/stats"),
   llmClear: () => jsonFetch<{ deleted: number }>("/api/llm-calls", { method: "DELETE" }),
+
+  // prompts
+  listPrompts: () => jsonFetch<{ items: PromptRow[] }>("/api/prompts"),
+  getPrompt: (key: string) => jsonFetch<PromptRow>(`/api/prompts/${encodeURIComponent(key)}`),
+  savePrompt: (key: string, template: string) =>
+    jsonFetch<PromptRow>(`/api/prompts/${encodeURIComponent(key)}`, {
+      method: "PUT", body: JSON.stringify({ template }),
+    }),
+  resetPrompt: (key: string) =>
+    jsonFetch<PromptRow>(`/api/prompts/${encodeURIComponent(key)}/reset`, { method: "POST" }),
+  previewPrompt: (key: string, body: { template?: string; vars?: Record<string, any> }) =>
+    jsonFetch<{ rendered: string }>(`/api/prompts/${encodeURIComponent(key)}/preview`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
 };
+
+export interface PromptRow {
+  key: string;
+  template: string;
+  description: string;
+  variables: { name: string; description: string; sample?: any }[];
+  is_custom: boolean;
+  default_hash: string | null;
+  updated_at: string;
+  filename?: string;
+  default_template?: string | null;
+}

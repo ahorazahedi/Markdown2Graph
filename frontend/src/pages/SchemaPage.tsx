@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/PageHeader";
 import { api, Schema, SchemaVersion, Triplet } from "@/lib/api";
+import { useUnsavedGuard } from "@/lib/unsavedGuard";
 
 export function SchemaPage() {
   const [schema, setSchema] = useState<Schema | null>(null);
@@ -34,11 +35,14 @@ export function SchemaPage() {
   };
   useEffect(() => { refresh(); }, []);
 
-  const dirty =
+  const dirty = !!(
     schema &&
     (JSON.stringify(nodes) !== JSON.stringify(schema.node_labels) ||
       JSON.stringify(triplets) !== JSON.stringify(schema.triplets) ||
-      extra !== (schema.extra || ""));
+      extra !== (schema.extra || ""))
+  );
+
+  useUnsavedGuard(dirty);
 
   const save = async () => {
     setSaving(true);

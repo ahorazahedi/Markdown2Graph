@@ -1,22 +1,25 @@
 import { useEffect, useState } from "react";
-import { Activity, Database, FileText, GitBranch, Play, ScrollText, Settings2 } from "lucide-react";
+import { Activity, Database, FileText, GitBranch, Play, ScrollText, Settings2, FileCode2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, AppConfig } from "@/lib/api";
+import { guard } from "@/lib/unsavedGuard";
 
 export type Route =
   | "setup"
-  | "schema"
   | "documents"
+  | "schema"
   | "ingest"
   | "graph"
+  | "prompts"
   | "llm-calls";
 
 const NAV: { key: Route; label: string; icon: any; hint: string }[] = [
   { key: "setup",      label: "Setup",      icon: Settings2,  hint: "Connection" },
-  { key: "schema",     label: "Schema",     icon: GitBranch,  hint: "Nodes & relationships" },
   { key: "documents",  label: "Documents",  icon: FileText,   hint: "Markdown registry" },
+  { key: "schema",     label: "Schema",     icon: GitBranch,  hint: "Nodes & relationships" },
   { key: "ingest",     label: "Ingest",     icon: Play,       hint: "Run extraction" },
-  { key: "graph",      label: "Graph",      icon: Database,   hint: "Stats & cleanup" },
+  { key: "graph",      label: "Graph",      icon: Database,   hint: "Viewer & stats" },
+  { key: "prompts",    label: "Prompts",    icon: FileCode2,  hint: "System templates" },
   { key: "llm-calls",  label: "LLM Calls",  icon: ScrollText, hint: "Audit log" },
 ];
 
@@ -50,7 +53,7 @@ export function AppShell({ children, config, route, onRouteChange }: {
             return (
               <button
                 key={item.key}
-                onClick={() => onRouteChange(item.key)}
+                onClick={() => guard.tryNavigate(() => onRouteChange(item.key))}
                 className={cn(
                   "group flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors",
                   active
@@ -82,7 +85,22 @@ export function AppShell({ children, config, route, onRouteChange }: {
 export function useHashRoute(): [Route, (r: Route) => void] {
   const [r, setR] = useState<Route>(routeFromHash());
   useEffect(() => {
-    const f = () => setR(routeFromHash());
+    let last = window.location.hash;
+    const f = () => {
+      const next = routeFromHash();
+      if (guard.isDirty()) {
+        // user used browser back/forward — revert until they confirm
+        const target = next;
+        window.history.replaceState(null, "", last);
+        guard.tryNavigate(() => {
+          window.location.hash = `#/${target}`;
+          setR(target);
+        });
+        return;
+      }
+      last = window.location.hash;
+      setR(next);
+    };
     window.addEventListener("hashchange", f);
     return () => window.removeEventListener("hashchange", f);
   }, []);

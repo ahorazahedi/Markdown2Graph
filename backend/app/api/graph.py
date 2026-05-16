@@ -30,3 +30,14 @@ def clear():
 def documents():
     repo = GraphRepository()
     return jsonify({"documents": repo.list_documents()})
+
+
+@bp.get("/graph/explore")
+def explore():
+    from flask import request
+    limit = int(request.args.get("limit", 200))
+    limit = max(10, min(limit, 1000))
+    file_name = request.args.get("file_name") or None
+    label = request.args.get("label") or None
+    repo = GraphRepository()
+    return jsonify(repo.explore(limit_nodes=limit, file_name=file_name, label=label))

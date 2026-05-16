@@ -352,8 +352,10 @@ async function collectFromDataTransfer(items: DataTransferItemList, fallback: Fi
   const out: { file: File; relPath: string }[] = [];
   let usedItems = false;
   for (const it of Array.from(items)) {
-    // @ts-expect-error vendor
-    const entry = typeof it.webkitGetAsEntry === "function" ? it.webkitGetAsEntry() : null;
+    const entry =
+      typeof (it as any).webkitGetAsEntry === "function"
+        ? (it as any).webkitGetAsEntry()
+        : null;
     if (!entry) continue;
     usedItems = true;
     await walk(entry, "", out);
