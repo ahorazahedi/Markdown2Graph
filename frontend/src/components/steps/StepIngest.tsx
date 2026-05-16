@@ -85,14 +85,36 @@ export function StepIngest({
           </Button>
         ) : (
           <>
-            <div className="flex items-center justify-between text-sm">
-              <span className="font-medium">{job?.stage || "starting"}</span>
-              <Badge variant={job?.status === "failed" ? "destructive" : "secondary"}>
-                {job?.status || "queued"}
-              </Badge>
-            </div>
-            <Progress value={(job?.progress ?? 0) * 100} />
-            <div className="text-sm text-muted-foreground">{job?.message}</div>
+            {(() => {
+              const last = job?.events_tail?.[job.events_tail.length - 1] as any;
+              const filesDone = last?.files_done as number | undefined;
+              const filesTotal = last?.files_total as number | undefined;
+              const pct = Math.round((job?.progress ?? 0) * 100);
+              const elapsed = job?.started_at
+                ? Math.max(0, ((job?.ended_at || Date.now() / 1000) - job.started_at))
+                : 0;
+              return (
+                <>
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium capitalize">{job?.stage || "starting"}</span>
+                      <Badge variant={job?.status === "failed" ? "destructive" : "secondary"}>
+                        {job?.status || "queued"}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground tabular-nums">
+                      {filesDone != null && filesTotal != null && (
+                        <span>{filesDone} / {filesTotal} files</span>
+                      )}
+                      <span>{elapsed.toFixed(1)}s</span>
+                      <span className="font-medium text-foreground">{pct}%</span>
+                    </div>
+                  </div>
+                  <Progress value={pct} className="h-3" />
+                  <div className="text-sm text-muted-foreground">{job?.message}</div>
+                </>
+              );
+            })()}
             <div className="max-h-72 overflow-auto rounded-md border border-border bg-background/40 p-2 font-mono text-xs">
               {(job?.events_tail ?? []).map((e, i) => (
                 <div key={i}>

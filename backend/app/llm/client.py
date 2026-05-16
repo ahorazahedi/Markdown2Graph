@@ -59,13 +59,27 @@ def build_embedder(settings: Settings | None = None) -> Tuple[object, int]:
     provider = s.embedding_provider.lower()
     if provider in ("sentence-transformers", "huggingface", "local"):
         return _local_embedder(s.embedding_model), s.embedding_dimension
-    if provider == "openai":
+    if provider in ("openai", "openrouter", "openai-compatible", "lm-studio"):
         from langchain_openai import OpenAIEmbeddings
 
+        if not s.effective_llm_api_key:
+            raise RuntimeError(
+                "Embeddings provider needs an api key — set OPENROUTER_API_KEY or LLM_API_KEY"
+            )
         emb = OpenAIEmbeddings(
             model=s.embedding_model,
             api_key=s.effective_llm_api_key,
             base_url=s.effective_llm_base_url,
+            # OpenAIEmbeddings sends a "dimensions" param when supported.
+            # Gemini embedding-001 returns 3072 by default; set explicitly
+            # so Neo4j vector index matches.
+            dimensions=s.embedding_dimension,
+            default_headers={
+                "HTTP-Referer": "https://github.com/text2graph",
+                "X-Title": "text2graph-medical",
+            },
+            # Smaller batch keeps us under OpenRouter's per-request token cap.
+            chunk_size=64,
         )
         return emb, s.embedding_dimension
     raise ValueError(f"Unknown embedding provider: {s.embedding_provider}")

@@ -52,6 +52,7 @@ class IngestionPipeline:
         total = len(files)
         results: List[dict] = []
         workers = self.cfg.max_workers or self.settings.ingest_concurrency
+        done = 0
 
         progress(JobUpdate(stage="loading", message=f"processing {total} files", progress=0.03))
 
@@ -59,28 +60,19 @@ class IngestionPipeline:
             i, p = idx_path
             try:
                 doc = loader.load_one(p)
-                stats = self._process_document(doc)
                 progress(
                     JobUpdate(
                         stage="extracting",
-                        message=f"[{i+1}/{total}] {doc.file_name}: "
-                                f"{stats['chunks']} chunks, {stats['entities']} entities, "
-                                f"{stats['relationships']} rels",
-                        progress=0.05 + 0.85 * (i + 1) / max(1, total),
-                        extra={"file": doc.file_name, **stats},
+                        message=f"reading {p.name}",
+                        progress=0.05 + 0.85 * done / max(1, total),
+                        extra={"file": p.name, "phase": "start",
+                               "files_done": done, "files_total": total},
                     )
                 )
+                stats = self._process_document(doc)
                 return {"file": doc.file_name, "ok": True, **stats}
             except Exception as e:
                 log.exception("file %s failed", p)
-                progress(
-                    JobUpdate(
-                        stage="extracting",
-                        message=f"[{i+1}/{total}] FAILED {p.name}: {e}",
-                        progress=0.05 + 0.85 * (i + 1) / max(1, total),
-                        extra={"file": p.name, "error": str(e)},
-                    )
-                )
                 try:
                     self.repo.set_document_status(p.name, "Failed", error=str(e))
                 except Exception:
@@ -90,7 +82,25 @@ class IngestionPipeline:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futures = [ex.submit(_do_one, (i, p)) for i, p in enumerate(files)]
             for fut in as_completed(futures):
-                results.append(fut.result())
+                r = fut.result()
+                results.append(r)
+                done += 1
+                if r.get("ok"):
+                    msg = (f"[{done}/{total}] {r['file']}: "
+                           f"{r.get('chunks', 0)} chunks, {r.get('entities', 0)} entities, "
+                           f"{r.get('relationships', 0)} rels")
+                else:
+                    msg = f"[{done}/{total}] FAILED {r['file']}: {r.get('error', '?')}"
+                progress(
+                    JobUpdate(
+                        stage="extracting",
+                        message=msg,
+                        progress=0.05 + 0.85 * done / max(1, total),
+                        extra={"file": r["file"], "phase": "done",
+                               "files_done": done, "files_total": total,
+                               **{k: v for k, v in r.items() if k not in ("file", "ok")}},
+                    )
+                )
 
         post_stats = self.post.run(progress=progress)
 
@@ -135,7 +145,9 @@ class IngestionPipeline:
 
         # 2. embeddings (best-effort, never fatal)
         try:
-            vectors = self.embedder.embed_documents([c.text for c in chunks])
+            from ..llm import with_tag
+            with with_tag("embedding"):
+                vectors = self.embedder.embed_documents([c.text for c in chunks])
             self.repo.write_chunk_embeddings(
                 [{"id": c.id, "embedding": v} for c, v in zip(chunks, vectors)]
             )
