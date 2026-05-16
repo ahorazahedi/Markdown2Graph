@@ -27,3 +27,17 @@ Quality rules
 - Do not invent facts that are not stated or directly implied by the text.
 - If the text is non-medical or unintelligible, return no entities for that
   chunk.
+
+{% if allowed_nodes %}
+Allowed node labels: {{ allowed_nodes | join(", ") }}
+{% endif %}
+{% if allowed_relationships %}
+Allowed relationship triplets:
+{% for src, rel, dst in allowed_relationships %}
+- {{ src }} -[:{{ rel }}]-> {{ dst }}
+{% endfor %}
+{% endif %}
+{% if extra_instructions %}
+
+User guidance: {{ extra_instructions }}
+{% endif %}

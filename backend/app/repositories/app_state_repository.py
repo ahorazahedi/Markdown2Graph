@@ -67,6 +67,16 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 CREATE INDEX IF NOT EXISTS idx_documents_status     ON documents(status);
 CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS prompts (
+    key             TEXT PRIMARY KEY,
+    template        TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    variables       TEXT NOT NULL DEFAULT '[]',  -- JSON list of {name, description}
+    is_custom       INTEGER NOT NULL DEFAULT 0,  -- 1 if user-edited from default
+    default_hash    TEXT,                        -- sha1 of original disk template
+    updated_at      TEXT NOT NULL
+);
 """
 
 
@@ -265,6 +275,90 @@ class AppStateRepository:
         with self._connect() as c:
             cur = c.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
             return (cur.rowcount or 0) > 0
+
+    # ---------------- prompts ----------------
+    def upsert_prompt_default(
+        self,
+        *,
+        key: str,
+        template: str,
+        description: str,
+        variables: list[dict],
+        default_hash: str,
+    ) -> None:
+        """Seed a prompt from disk. Preserves user edits if `is_custom = 1`."""
+        now = _now()
+        vars_json = json.dumps(variables, ensure_ascii=False)
+        with self._connect() as c:
+            row = c.execute("SELECT is_custom FROM prompts WHERE key = ?", (key,)).fetchone()
+            if row is None:
+                c.execute(
+                    "INSERT INTO prompts (key, template, description, variables, "
+                    "is_custom, default_hash, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
+                    (key, template, description, vars_json, default_hash, now),
+                )
+            else:
+                # update description + variables + default_hash; preserve user template if customized
+                if row["is_custom"]:
+                    c.execute(
+                        "UPDATE prompts SET description = ?, variables = ?, "
+                        "default_hash = ? WHERE key = ?",
+                        (description, vars_json, default_hash, key),
+                    )
+                else:
+                    c.execute(
+                        "UPDATE prompts SET template = ?, description = ?, variables = ?, "
+                        "default_hash = ?, updated_at = ? WHERE key = ?",
+                        (template, description, vars_json, default_hash, now, key),
+                    )
+
+    def list_prompts(self) -> list[dict]:
+        with self._connect() as c:
+            rows = c.execute(
+                "SELECT key, template, description, variables, is_custom, "
+                "default_hash, updated_at FROM prompts ORDER BY key"
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["variables"] = json.loads(d["variables"])
+            d["is_custom"] = bool(d["is_custom"])
+            out.append(d)
+        return out
+
+    def get_prompt(self, key: str) -> dict | None:
+        with self._connect() as c:
+            row = c.execute(
+                "SELECT key, template, description, variables, is_custom, "
+                "default_hash, updated_at FROM prompts WHERE key = ?",
+                (key,),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["variables"] = json.loads(d["variables"])
+        d["is_custom"] = bool(d["is_custom"])
+        return d
+
+    def save_prompt(self, key: str, template: str) -> dict | None:
+        with self._connect() as c:
+            cur = c.execute(
+                "UPDATE prompts SET template = ?, is_custom = 1, updated_at = ? WHERE key = ?",
+                (template, _now(), key),
+            )
+            if (cur.rowcount or 0) == 0:
+                return None
+        return self.get_prompt(key)
+
+    def reset_prompt(self, key: str, default_template: str) -> dict | None:
+        with self._connect() as c:
+            cur = c.execute(
+                "UPDATE prompts SET template = ?, is_custom = 0, updated_at = ? WHERE key = ?",
+                (default_template, _now(), key),
+            )
+            if (cur.rowcount or 0) == 0:
+                return None
+        return self.get_prompt(key)
 
     def stats(self) -> dict:
         with self._connect() as c:

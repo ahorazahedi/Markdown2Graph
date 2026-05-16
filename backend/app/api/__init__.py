@@ -8,6 +8,7 @@ from .ingest import bp as ingest_bp
 from .graph import bp as graph_bp
 from .llm_calls import bp as llm_calls_bp
 from .upload import bp as upload_bp  # legacy: kept for back-compat / external callers
+from .prompts_api import bp as prompts_bp
 
 
 def register_blueprints(app: Flask) -> None:
@@ -19,3 +20,4 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(graph_bp, url_prefix="/api")
     app.register_blueprint(llm_calls_bp, url_prefix="/api")
     app.register_blueprint(upload_bp, url_prefix="/api")
+    app.register_blueprint(prompts_bp, url_prefix="/api")

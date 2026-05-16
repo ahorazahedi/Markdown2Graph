@@ -36,10 +36,10 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 4096
     llm_timeout: int = 120
 
-    # Embeddings
-    embedding_provider: str = "sentence-transformers"
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    embedding_dimension: int = 384
+    # Embeddings — default to OpenRouter so the local HF download path is opt-in.
+    embedding_provider: str = "openrouter"
+    embedding_model: str = "google/gemini-embedding-001"
+    embedding_dimension: int = 3072
 
     # Chunking
     chunk_token_size: int = 600

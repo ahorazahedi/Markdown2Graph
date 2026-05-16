@@ -44,11 +44,12 @@ class SchemaDiscoveryService:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         from ..llm import build_chat_llm, with_tag
-        from ..prompts import SCHEMA_DISCOVERY_SYSTEM
+        from .prompt_store import PromptStore
 
-        sys_prompt = SCHEMA_DISCOVERY_SYSTEM
-        if extra_instructions:
-            sys_prompt += f"\n\nAdditional user guidance:\n{extra_instructions.strip()}"
+        sys_prompt = PromptStore().render(
+            "schema_discovery_system",
+            extra_instructions=(extra_instructions or "").strip(),
+        )
 
         llm = build_chat_llm()
         log.info("schema_discovery: sampling %d/%d files (%d chars)", len(docs), len(files), len(joined))

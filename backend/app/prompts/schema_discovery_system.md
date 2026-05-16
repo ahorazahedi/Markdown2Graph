@@ -33,4 +33,9 @@ Rules
 7. Be exhaustive but concise — typically 8–25 node labels and 10–40
    relationships across the sampled corpus.
 
+{% if extra_instructions %}
+Additional guidance from the user:
+{{ extra_instructions }}
+{% endif %}
+
 Output JSON only, no prose, no markdown fences.

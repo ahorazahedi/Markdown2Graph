@@ -8,7 +8,7 @@ from langchain_experimental.graph_transformers import LLMGraphTransformer
 from langchain_experimental.graph_transformers.llm import _Graph
 
 from ..llm import build_chat_llm
-from ..prompts import ENTITY_EXTRACTION_INSTRUCTIONS
+from .prompt_store import PromptStore
 
 log = logging.getLogger(__name__)
 
@@ -35,9 +35,12 @@ class EntityExtractor:
         node_props = ["description"] if supports else False
         rel_props = ["description"] if supports else False
 
-        instructions = ENTITY_EXTRACTION_INSTRUCTIONS
-        if extra_instructions:
-            instructions += "\n\n" + self._sanitize(extra_instructions)
+        instructions = PromptStore().render(
+            "entity_extraction_instructions",
+            allowed_nodes=allowed_nodes or [],
+            allowed_relationships=allowed_relationships or [],
+            extra_instructions=self._sanitize(extra_instructions) if extra_instructions else "",
+        )
 
         self.transformer = LLMGraphTransformer(
             llm=self.llm,

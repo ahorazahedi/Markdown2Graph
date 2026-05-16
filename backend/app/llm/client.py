@@ -5,6 +5,7 @@ the same `ChatOpenAI` client works for both — only the base_url + key differ.
 """
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import Tuple
 
@@ -12,6 +13,8 @@ from langchain_openai import ChatOpenAI
 
 from ..config import Settings, get_settings
 from .recorder import LLMCallRecorder
+
+log = logging.getLogger(__name__)
 
 
 def build_chat_llm(settings: Settings | None = None, *, tag: str | None = None) -> ChatOpenAI:
@@ -56,8 +59,14 @@ def _local_embedder(model_name: str):
 
 def build_embedder(settings: Settings | None = None) -> Tuple[object, int]:
     s = settings or get_settings()
-    provider = s.embedding_provider.lower()
+    provider = s.embedding_provider.strip().lower()
+    log.info(
+        "build_embedder: provider=%r model=%r dim=%d base_url=%s",
+        provider, s.embedding_model, s.embedding_dimension, s.effective_llm_base_url,
+    )
     if provider in ("sentence-transformers", "huggingface", "local"):
+        log.warning("Using LOCAL HuggingFace embeddings — set EMBEDDING_PROVIDER=openrouter "
+                    "in .env (and restart the backend) to use the API instead.")
         return _local_embedder(s.embedding_model), s.embedding_dimension
     if provider in ("openai", "openrouter", "openai-compatible", "lm-studio"):
         from langchain_openai import OpenAIEmbeddings
