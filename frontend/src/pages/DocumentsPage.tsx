@@ -11,6 +11,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { DocumentStatusBadge } from "@/components/StatusBadge";
 import { cn } from "@/lib/utils";
 import { api, DocumentRow, DocumentStats, EntityGraph } from "@/lib/api";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const ALLOWED_RE = /\.(md|markdown)$/i;
 
@@ -224,14 +226,17 @@ function StatTile({ label, value, accent }: { label: string; value?: number; acc
 function DocumentDrawer({ doc, onClose, onDeleted }: {
   doc: DocumentRow | null; onClose: () => void; onDeleted: () => void;
 }) {
-  const [entities, setEntities] = useState<EntityGraph | null>(null);
+  const [entities, setEntities] = useState<EntityGraph>({ nodes: [], relationships: [] });
   const [chunks, setChunks] = useState<{ id: string; position: number; text: string; length: number }[]>([]);
+  const [content, setContent] = useState<string | null>(null);
+  const [contentLoading, setContentLoading] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!doc) return;
-    setEntities(null);
+    setEntities({ nodes: [], relationships: [] });
     setChunks([]);
+    setContent(null);
     setLoading(true);
     Promise.all([
       api.documentEntities(doc.id).catch(() => ({ nodes: [], relationships: [] } as EntityGraph)),
@@ -241,6 +246,19 @@ function DocumentDrawer({ doc, onClose, onDeleted }: {
       setChunks(c);
     }).finally(() => setLoading(false));
   }, [doc?.id]);
+
+  const loadContent = async () => {
+    if (!doc || content != null) return;
+    setContentLoading(true);
+    try {
+      const r = await api.documentContent(doc.id);
+      setContent(r.content);
+    } catch (e) {
+      setContent(`Failed to load content: ${e}`);
+    } finally {
+      setContentLoading(false);
+    }
+  };
 
   if (!doc) return null;
 
@@ -270,18 +288,33 @@ function DocumentDrawer({ doc, onClose, onDeleted }: {
           </pre>
         )}
 
-        <Tabs defaultValue="entities">
+        <Tabs defaultValue="content" onValueChange={(v) => { if (v === "content") loadContent(); }}>
           <TabsList>
-            <TabsTrigger value="entities">Entities ({entities?.nodes.length ?? 0})</TabsTrigger>
-            <TabsTrigger value="relationships">Relationships ({entities?.relationships.length ?? 0})</TabsTrigger>
+            <TabsTrigger value="content">Content</TabsTrigger>
+            <TabsTrigger value="entities">Entities ({entities.nodes.length})</TabsTrigger>
+            <TabsTrigger value="relationships">Relationships ({entities.relationships.length})</TabsTrigger>
             <TabsTrigger value="chunks">Chunks ({chunks.length})</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="content" className="pt-4">
+            {contentLoading && !content ? (
+              <div className="text-sm text-muted-foreground">Loading…</div>
+            ) : content == null ? (
+              <Button size="sm" variant="outline" onClick={loadContent}>
+                <FileText className="h-3.5 w-3.5" /> Load markdown
+              </Button>
+            ) : (
+              <div className="prose prose-sm dark:prose-invert max-w-none rounded-sm border border-border bg-muted/20 px-4 py-3">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+              </div>
+            )}
+          </TabsContent>
 
           <TabsContent value="entities" className="pt-4">
             {loading
               ? <div className="text-sm text-muted-foreground">Loading…</div>
-              : entities?.nodes.length === 0
-                ? <div className="text-sm text-muted-foreground">No entities extracted for this document.</div>
+              : entities.nodes.length === 0
+                ? <div className="text-sm text-muted-foreground">No entities extracted for this document. Run ingest to populate.</div>
                 : (
                   <div className="overflow-hidden rounded-sm border border-border">
                     <table className="w-full text-sm">
@@ -293,7 +326,7 @@ function DocumentDrawer({ doc, onClose, onDeleted }: {
                         </tr>
                       </thead>
                       <tbody>
-                        {entities!.nodes.map((n, i) => (
+                        {entities.nodes.map((n, i) => (
                           <tr key={i} className="border-b border-border last:border-0">
                             <td className="px-3 py-1.5">
                               {n.labels.map((l) => <Badge key={l} variant="outline" className="mr-1 text-xs">{l}</Badge>)}
@@ -309,13 +342,13 @@ function DocumentDrawer({ doc, onClose, onDeleted }: {
           </TabsContent>
 
           <TabsContent value="relationships" className="pt-4">
-            {entities?.relationships.length === 0
+            {entities.relationships.length === 0
               ? <div className="text-sm text-muted-foreground">No relationships.</div>
               : (
                 <div className="overflow-hidden rounded-sm border border-border">
                   <table className="w-full text-sm">
                     <tbody>
-                      {entities?.relationships.map((r, i) => (
+                      {entities.relationships.map((r, i) => (
                         <tr key={i} className="border-b border-border last:border-0">
                           <td className="px-3 py-1.5 font-mono text-xs">{r.source}</td>
                           <td className="px-3 py-1.5 font-mono text-xs text-foreground">→ {r.type} →</td>
@@ -329,17 +362,21 @@ function DocumentDrawer({ doc, onClose, onDeleted }: {
           </TabsContent>
 
           <TabsContent value="chunks" className="pt-4">
-            <div className="space-y-2">
-              {chunks.map((c) => (
-                <details key={c.id} className="rounded-sm border border-border">
-                  <summary className="flex cursor-pointer items-center justify-between px-3 py-1.5 text-xs">
-                    <span className="font-mono">#{c.position} · {c.id.slice(0, 10)}…</span>
-                    <span className="text-muted-foreground">{c.length} chars</span>
-                  </summary>
-                  <pre className="border-t border-border bg-muted/30 p-3 text-xs whitespace-pre-wrap">{c.text}</pre>
-                </details>
-              ))}
-            </div>
+            {chunks.length === 0
+              ? <div className="text-sm text-muted-foreground">No chunks. Run ingest first.</div>
+              : (
+                <div className="space-y-2">
+                  {chunks.map((c) => (
+                    <details key={c.id} className="rounded-sm border border-border">
+                      <summary className="flex cursor-pointer items-center justify-between px-3 py-1.5 text-xs">
+                        <span className="font-mono">#{c.position} · {c.id.slice(0, 10)}…</span>
+                        <span className="text-muted-foreground">{c.length} chars</span>
+                      </summary>
+                      <pre className="border-t border-border bg-muted/30 p-3 text-xs whitespace-pre-wrap">{c.text}</pre>
+                    </details>
+                  ))}
+                </div>
+              )}
           </TabsContent>
         </Tabs>
       </div>

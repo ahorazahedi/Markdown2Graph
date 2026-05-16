@@ -80,6 +80,23 @@ def doc_entities(doc_id: int):
     return jsonify(repo.list_document_entities(d["file_name"]))
 
 
+@bp.get("/documents/<int:doc_id>/content")
+def doc_content(doc_id: int):
+    d = AppStateRepository().get_document(doc_id)
+    if not d:
+        raise NotFoundError(f"document {doc_id} not found")
+    p = Path(d["source_path"])
+    if not p.exists():
+        raise NotFoundError(f"source file missing on disk: {p}")
+    text = p.read_text(encoding="utf-8", errors="replace")
+    return jsonify({
+        "file_name": d["file_name"],
+        "title": d["title"],
+        "size_bytes": d["size_bytes"],
+        "content": text,
+    })
+
+
 @bp.get("/documents/<int:doc_id>/chunks")
 def doc_chunks(doc_id: int):
     d = AppStateRepository().get_document(doc_id)

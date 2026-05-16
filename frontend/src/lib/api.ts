@@ -182,6 +182,8 @@ export const api = {
   documentEntities: (id: number) => jsonFetch<EntityGraph>(`/api/documents/${id}/entities`),
   documentChunks: (id: number) =>
     jsonFetch<{ chunks: { id: string; position: number; length: number; text: string }[] }>(`/api/documents/${id}/chunks`),
+  documentContent: (id: number) =>
+    jsonFetch<{ file_name: string; title: string | null; size_bytes: number; content: string }>(`/api/documents/${id}/content`),
 
   // ingest
   runIngest: (body: { document_ids?: number[]; reextract?: boolean }) =>
