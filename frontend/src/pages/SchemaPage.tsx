@@ -244,21 +244,21 @@ export function SchemaPage() {
           <EmptyHint>No relationships defined.</EmptyHint>
         ) : (
           <div className="overflow-hidden rounded-sm border border-border">
-            <div className="grid grid-cols-[1fr_auto_1fr_2.25rem] gap-x-3 border-b border-border bg-muted/30 px-3 py-1.5 text-2xs uppercase tracking-wider text-muted-foreground">
-              <span>Source</span>
-              <span className="text-center">Type</span>
-              <span>Target</span>
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_2.25rem] items-center gap-x-4 border-b border-border bg-muted/30 px-3 py-1.5 text-2xs uppercase tracking-wider text-muted-foreground">
+              <span className="justify-self-start">Source</span>
+              <span className="justify-self-center">Type</span>
+              <span className="justify-self-start">Target</span>
               <span />
             </div>
             <ul className="max-h-[420px] overflow-y-auto divide-y divide-border">
               {triplets.map((t, i) => (
                 <li key={i}
-                    className="grid grid-cols-[1fr_auto_1fr_2.25rem] items-center gap-x-3 px-3 py-2 hover:bg-accent/40">
-                  <Badge variant="outline" className="w-fit text-xs">{t[0]}</Badge>
-                  <span className="font-mono text-2xs text-foreground">— {t[1]} →</span>
-                  <Badge variant="outline" className="w-fit text-xs">{t[2]}</Badge>
+                    className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_2.25rem] items-center gap-x-4 px-3 py-2 hover:bg-accent/40">
+                  <Badge variant="outline" className="w-fit justify-self-start text-xs">{t[0]}</Badge>
+                  <span className="justify-self-center font-mono text-2xs text-foreground">— {t[1]} →</span>
+                  <Badge variant="outline" className="w-fit justify-self-start text-xs">{t[2]}</Badge>
                   <button onClick={() => setTriplets(triplets.filter((_, idx) => idx !== i))}
-                          className="rounded-sm p-1 text-muted-foreground hover:bg-destructive/15 hover:text-destructive">
+                          className="justify-self-end rounded-sm p-1 text-muted-foreground hover:bg-destructive/15 hover:text-destructive">
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </li>
@@ -267,7 +267,7 @@ export function SchemaPage() {
           </div>
         )}
 
-        <div className="mt-3 grid grid-cols-[1fr_1fr_1fr_auto] gap-2">
+        <div className="mt-3 grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)_auto] gap-2">
           <Input list="schema-nodes" placeholder="Source"
                  value={newRel.src} onChange={(e) => setNewRel({ ...newRel, src: e.target.value })} />
           <Input placeholder="REL_TYPE"
