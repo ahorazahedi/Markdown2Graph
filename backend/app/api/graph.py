@@ -24,3 +24,9 @@ def clear():
     repo = GraphRepository()
     repo.clear_all()
     return jsonify({"status": "ok", "cleared": True})
+
+
+@bp.get("/graph/documents")
+def documents():
+    repo = GraphRepository()
+    return jsonify({"documents": repo.list_documents()})
