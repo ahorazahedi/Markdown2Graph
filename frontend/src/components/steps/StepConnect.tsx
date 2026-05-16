@@ -67,9 +67,9 @@ export function StepConnect({ onNext, config }: { onNext: () => void; config: Ap
               </div>
             </CardHeader>
             <CardContent className="space-y-1 text-sm text-muted-foreground">
-              <div><span className="text-foreground">Model:</span> {config?.llm.model}</div>
-              <div className="break-all"><span className="text-foreground">Base URL:</span> {config?.llm.base_url}</div>
-              <div><span className="text-foreground">Domain:</span> {config?.domain}</div>
+              <div><span className="text-foreground">Model:</span> <span className="font-mono">{config?.llm.model}</span></div>
+              <div className="break-all"><span className="text-foreground">Base URL:</span> <span className="font-mono text-xs">{config?.llm.base_url}</span></div>
+              <div><span className="text-foreground">Embeddings:</span> <span className="font-mono text-xs">{config?.embedding.model}</span> (dim {config?.embedding.dimension})</div>
             </CardContent>
           </Card>
         </div>

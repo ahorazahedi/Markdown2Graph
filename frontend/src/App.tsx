@@ -61,8 +61,8 @@ export default function App() {
               LLM Calls
             </NavTab>
           </nav>
-          <div className="hidden text-xs text-muted-foreground md:block">
-            {config?.llm.model} · {config?.embedding.model}
+          <div className="hidden text-xs text-muted-foreground lg:block">
+            <span className="font-mono">{config?.llm.model}</span>
           </div>
         </div>
       </header>
