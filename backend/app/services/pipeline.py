@@ -12,7 +12,7 @@ from ..repositories.app_state_repository import AppStateRepository
 from ..repositories.graph_repository import GraphRepository
 from .chunker import MarkdownChunker
 from .entity_extractor import EntityExtractor
-from .job_registry import JobUpdate
+from .job_registry import JobCancelled, JobUpdate
 from .markdown_loader import MarkdownDoc, MarkdownLoader
 from .post_processor import PostProcessor
 
@@ -52,9 +52,11 @@ class IngestionPipeline:
         *,
         reextract: bool = False,
         progress: Callable[[JobUpdate], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> dict:
         """Ingest a specific set of documents identified by app-state ids."""
         progress = progress or (lambda _u: None)
+        is_cancelled = is_cancelled or (lambda: False)
         progress(JobUpdate(stage="setup", message="ensuring constraints", progress=0.01))
         self.repo.ensure_constraints()
 
@@ -64,17 +66,21 @@ class IngestionPipeline:
             if not d:
                 continue
             records.append(d)
-        return self._run_records(records, reextract=reextract, progress=progress)
+        return self._run_records(records, reextract=reextract, progress=progress,
+                                 is_cancelled=is_cancelled)
 
-    def run_pending(self, progress: Callable[[JobUpdate], None] | None = None) -> dict:
+    def run_pending(self, progress: Callable[[JobUpdate], None] | None = None,
+                    is_cancelled: Callable[[], bool] | None = None) -> dict:
         """Convenience: ingest every doc not already completed."""
         progress = progress or (lambda _u: None)
+        is_cancelled = is_cancelled or (lambda: False)
         self.repo.ensure_constraints()
         records = [
             d for d in self.state.list_documents()
             if d["status"] in ("pending", "failed")
         ]
-        return self._run_records(records, reextract=False, progress=progress)
+        return self._run_records(records, reextract=False, progress=progress,
+                                 is_cancelled=is_cancelled)
 
     # ------------------------------------------------------------------
     def _run_records(
@@ -83,6 +89,7 @@ class IngestionPipeline:
         *,
         reextract: bool,
         progress: Callable[[JobUpdate], None],
+        is_cancelled: Callable[[], bool] = lambda: False,
     ) -> dict:
         total = len(records)
         if total == 0:
@@ -98,6 +105,15 @@ class IngestionPipeline:
 
         def _do_one(idx_record):
             i, rec = idx_record
+            if is_cancelled():
+                # bail before touching the file — flip back to pending
+                try:
+                    self.state.set_status(rec["id"], "pending",
+                                          error="cancelled before start")
+                except Exception:
+                    pass
+                return {"id": rec["id"], "file": rec["file_name"],
+                        "ok": False, "cancelled": True, "error": "cancelled"}
             try:
                 p = Path(rec["source_path"])
                 if not p.exists():
@@ -117,7 +133,25 @@ class IngestionPipeline:
                     # purge previous graph state for this file before reprocessing
                     self.repo.delete_document(rec["file_name"])
                 stats = self._process_document(doc, progress=progress,
-                                                file_idx=i, file_total=total)
+                                                file_idx=i, file_total=total,
+                                                state_doc_id=rec["id"],
+                                                is_cancelled=is_cancelled)
+                if stats.get("cancelled"):
+                    self.state.set_status(rec["id"], "pending",
+                                          error="cancelled mid-extraction")
+                    try:
+                        self.repo.set_document_status(
+                            rec["file_name"], "Cancelled",
+                            error="cancelled mid-extraction",
+                            chunk_count=stats.get("chunks"),
+                            entity_count=stats.get("entities"),
+                            relationship_count=stats.get("relationships"),
+                        )
+                    except Exception:
+                        pass
+                    return {"id": rec["id"], "file": doc.file_name,
+                            "ok": False, "cancelled": True,
+                            "error": "cancelled", **stats}
                 self.state.set_status(rec["id"], "completed")
                 self.state.set_counts(
                     rec["id"],
@@ -158,6 +192,19 @@ class IngestionPipeline:
                     )
                 )
 
+        if is_cancelled():
+            progress(JobUpdate(
+                stage="cancelled",
+                message="ingestion cancelled — skipping post-processing",
+                progress=max(0.9, min(1.0, 0.05 + 0.85 * done / max(1, total))),
+                extra={"level": "warn"},
+            ))
+            return {
+                "files": results,
+                "post_processing": {"skipped": "cancelled"},
+                "totals": self.repo.stats(),
+                "cancelled": True,
+            }
         post_stats = self.post.run(progress=progress)
         progress(JobUpdate(stage="done", message="ingestion complete", progress=1.0))
         return {
@@ -169,7 +216,9 @@ class IngestionPipeline:
     # ------------------------------------------------------------------
     def _process_document(self, doc: MarkdownDoc,
                           progress: Callable[[JobUpdate], None] | None = None,
-                          file_idx: int = 0, file_total: int = 1) -> dict:
+                          file_idx: int = 0, file_total: int = 1,
+                          state_doc_id: int | None = None,
+                          is_cancelled: Callable[[], bool] = lambda: False) -> dict:
         progress = progress or (lambda _u: None)
         # progress portion this file gets within the 0.05..0.90 window
         base = 0.05 + 0.85 * file_idx / max(1, file_total)
@@ -227,7 +276,12 @@ class IngestionPipeline:
                   {"level": "warn", "embedding_error": str(e)})
 
         s = self.settings
-        combine = max(1, s.chunks_to_combine)
+        from .settings_service import SettingsService
+        _svc = SettingsService()
+        try:
+            combine = max(1, int(_svc.get("chunks_to_combine") or s.chunks_to_combine))
+        except Exception:
+            combine = max(1, s.chunks_to_combine)
         from langchain_core.documents import Document
         windows: list[list] = []
         for i in range(0, len(chunks), combine):
@@ -243,11 +297,50 @@ class IngestionPipeline:
 
         ent_count = 0
         rel_count = 0
+        # checkpoint cadence: every N windows we mirror partial counts into
+        # both Neo4j (Document.processedChunkCount + counts) and the SQLite
+        # document row, so a crash/cancel mid-run leaves recoverable state.
+        checkpoint_every = max(1, int(getattr(self.settings, "checkpoint_every_chunks", 5) or 5))
+        last_checkpoint = 0
+
+        def _checkpoint(processed_chunks: int) -> None:
+            try:
+                self.repo.checkpoint_document_progress(
+                    doc.file_name,
+                    processed_chunks=processed_chunks,
+                    entity_count=ent_count,
+                    relationship_count=rel_count,
+                )
+            except Exception as ex:
+                log.warning("graph checkpoint failed for %s: %s", doc.file_name, ex)
+            if state_doc_id is not None:
+                try:
+                    self.state.update_counts_progress(
+                        state_doc_id,
+                        chunk_count=processed_chunks,
+                        entity_count=ent_count,
+                        relationship_count=rel_count,
+                    )
+                except Exception as ex:
+                    log.warning("state checkpoint failed for %s: %s", doc.file_name, ex)
+
+        cancelled_mid = False
+        processed_chunks = 0
         for w_idx, window in enumerate(windows):
+            if is_cancelled():
+                cancelled_mid = True
+                break
             text = "\n\n".join(w.text for w in window)
             chunk_id = window[0].id
+            # Carry EVERY chunk id in the window so HAS_ENTITY edges are
+            # written for each chunk that contributed text — mirrors
+            # llm-graph-builder's `combined_chunk_ids` metadata. With
+            # chunks_to_combine=1 the list has a single element.
+            combined_ids = [w.id for w in window]
             lc_docs = [Document(page_content=text,
-                                metadata={"chunk_id": chunk_id, "file_name": doc.file_name})]
+                                metadata={"chunk_id": chunk_id,
+                                          "combined_chunk_ids": combined_ids,
+                                          "file_name": doc.file_name})]
             attempts = max_retries + 1
             last_err: str | None = None
             e = r = 0
@@ -256,7 +349,7 @@ class IngestionPipeline:
             import time as _time
             for attempt in range(1, attempts + 1):
                 try:
-                    graph_docs = self.extractor.extract(lc_docs)
+                    graph_docs, drops = self.extractor.extract(lc_docs)
                     nodes_seen = sum(len(getattr(gd, "nodes", []) or []) for gd in graph_docs)
                     # heuristic: if extractor returns nothing meaningful, treat
                     # as transient failure and retry. The LLM occasionally
@@ -273,12 +366,35 @@ class IngestionPipeline:
                              "chunk_index": w_idx + 1, "chunks_total": len(windows),
                              "attempt": attempt, "max_retries": max_retries},
                         )
-                        _time.sleep(backoff0 * (2 ** (attempt - 1)))
+                        # sleep in 1-second slices so a cancel during retry
+                        # backoff is honored within ~1s rather than the full
+                        # exponential delay
+                        _remaining = backoff0 * (2 ** (attempt - 1))
+                        while _remaining > 0 and not is_cancelled():
+                            _slice = min(1.0, _remaining)
+                            _time.sleep(_slice)
+                            _remaining -= _slice
+                        if is_cancelled():
+                            break
                         continue
                     e, r = self.repo.write_graph_documents(doc.file_name, graph_docs)
                     ent_count += e
                     rel_count += r
                     succeeded = True
+                    if any(drops.get(k, 0) for k in (
+                        "nodes_dropped", "rels_dropped_endpoint", "rels_dropped_triplet"
+                    )):
+                        _emit(
+                            0.30 + 0.65 * (w_idx + 0.5) / max(1, len(windows)),
+                            f"{doc.file_name}: chunk {w_idx + 1}/{len(windows)} "
+                            f"schema-filtered "
+                            f"({drops.get('nodes_dropped', 0)} nodes, "
+                            f"{drops.get('rels_dropped_endpoint', 0)}+"
+                            f"{drops.get('rels_dropped_triplet', 0)} rels)",
+                            {"level": "info", "chunk_id": chunk_id,
+                             "chunk_index": w_idx + 1, "chunks_total": len(windows),
+                             **drops},
+                        )
                     break
                 except Exception as ex:
                     last_err = f"{type(ex).__name__}: {ex}"
@@ -294,7 +410,16 @@ class IngestionPipeline:
                              "attempt": attempt, "max_retries": max_retries,
                              "error": last_err},
                         )
-                        _time.sleep(backoff0 * (2 ** (attempt - 1)))
+                        # sleep in 1-second slices so a cancel during retry
+                        # backoff is honored within ~1s rather than the full
+                        # exponential delay
+                        _remaining = backoff0 * (2 ** (attempt - 1))
+                        while _remaining > 0 and not is_cancelled():
+                            _slice = min(1.0, _remaining)
+                            _time.sleep(_slice)
+                            _remaining -= _slice
+                        if is_cancelled():
+                            break
                     else:
                         _emit(
                             0.30 + 0.65 * (w_idx + 1) / max(1, len(windows)),
@@ -315,6 +440,18 @@ class IngestionPipeline:
                 {"chunk_id": chunk_id, "chunk_index": w_idx + 1,
                  "chunks_total": len(windows), "entities": e, "relationships": r},
             )
+
+            processed = w_idx + 1
+            processed_chunks = processed
+            if processed - last_checkpoint >= checkpoint_every or processed == len(windows):
+                _checkpoint(processed)
+                last_checkpoint = processed
+
+        if cancelled_mid:
+            # final checkpoint of what we managed to extract before bailing
+            _checkpoint(processed_chunks)
+            return {"chunks": processed_chunks, "entities": ent_count,
+                    "relationships": rel_count, "cancelled": True}
 
         self.repo.set_document_status(
             doc.file_name,

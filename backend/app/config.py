@@ -53,6 +53,9 @@ class Settings(BaseSettings):
 
     # Pipeline
     ingest_concurrency: int = 4
+    # mid-extraction checkpoint cadence — flushes processed_chunk + counts to
+    # Neo4j + SQLite every N windows so a crash/cancel leaves recoverable state
+    checkpoint_every_chunks: int = 5
     enable_post_processing: bool = True
     enable_similar_chunks: bool = True
     knn_min_score: float = 0.8
@@ -73,6 +76,15 @@ class Settings(BaseSettings):
 
     # Persistent app state (schemas, documents)
     app_state_db_path: str = "backend/data/text2graph.db"
+
+    # Chat / RAG persistence — separate file so chat history can be wiped /
+    # exported / backed up independently of the rest of the app state.
+    chat_db_path: str = "backend/data/chat.db"
+    chat_history_max_messages: int = 200
+    chat_summary_token_target: int = 1500
+    chat_top_k: int = 5
+    chat_doc_split_size: int = 3000
+    chat_embedding_filter_threshold: float = 0.10
 
     @field_validator("log_level")
     @classmethod

@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   RefreshCw, ChevronLeft, ChevronRight, CheckCircle2, XCircle, Loader2,
-  Clock, AlertTriangle,
+  Clock, AlertTriangle, StopCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { api, JobEvent, JobOverview, JobRun } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { confirm } from "@/lib/confirm";
 
 const PAGE = 50;
 
@@ -68,7 +69,7 @@ export function JobsPage() {
           setEvents((prev) => [...prev, ...ev.events]);
         }
         // stop tailing when terminal
-        if (j.status === "succeeded" || j.status === "failed") {
+        if (j.status === "succeeded" || j.status === "failed" || j.status === "cancelled") {
           setTailing(false);
         }
       } catch {}
@@ -249,6 +250,31 @@ function JobDetail({
             <Meta k="Elapsed"  v={`${elapsed}s`} />
             <Meta k="Created"  v={fmtTime(job.created_at)} />
             {job.ended_at && <Meta k="Ended" v={fmtTime(job.ended_at)} />}
+            {(job.status === "running" || job.status === "queued") && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-destructive hover:bg-destructive/10"
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: "Cancel this job?",
+                    description: "An in-flight LLM call will finish before the worker exits. Partial progress is preserved on disk.",
+                    confirmText: "Cancel job",
+                    cancelText: "Keep running",
+                    variant: "destructive",
+                  });
+                  if (!ok) return;
+                  try { await api.cancelJob(job.id); } catch (e) { console.error(e); }
+                }}
+              >
+                <StopCircle className="mr-1 h-3.5 w-3.5" /> cancel
+              </Button>
+            )}
+            {job.status === "cancelling" && (
+              <span className="rounded-sm bg-[hsl(var(--warning)/0.15)] px-2 py-0.5 text-2xs font-medium text-[hsl(var(--warning))]">
+                cancelling…
+              </span>
+            )}
           </div>
         </div>
         <div className="mt-2 flex items-center gap-3">
@@ -373,21 +399,27 @@ function FilterChip({ value, options, onChange }: {
 }
 
 function statusIcon(s: string) {
-  if (s === "succeeded") return { icon: CheckCircle2 };
-  if (s === "failed")    return { icon: XCircle };
-  if (s === "running")   return { icon: Loader2 };
+  if (s === "succeeded")  return { icon: CheckCircle2 };
+  if (s === "failed")     return { icon: XCircle };
+  if (s === "running")    return { icon: Loader2 };
+  if (s === "cancelling") return { icon: Loader2 };
+  if (s === "cancelled")  return { icon: XCircle };
   return { icon: Clock };
 }
 function statusColor(s: string) {
-  if (s === "succeeded") return "text-[hsl(var(--success))]";
-  if (s === "failed")    return "text-destructive";
-  if (s === "running")   return "text-[hsl(var(--warning))]";
+  if (s === "succeeded")  return "text-[hsl(var(--success))]";
+  if (s === "failed")     return "text-destructive";
+  if (s === "running")    return "text-[hsl(var(--warning))]";
+  if (s === "cancelling") return "text-[hsl(var(--warning))]";
+  if (s === "cancelled")  return "text-muted-foreground";
   return "text-muted-foreground";
 }
 function statusVariant(s: string): "success" | "destructive" | "warning" | "secondary" {
-  if (s === "succeeded") return "success";
-  if (s === "failed")    return "destructive";
-  if (s === "running")   return "warning";
+  if (s === "succeeded")  return "success";
+  if (s === "failed")     return "destructive";
+  if (s === "running")    return "warning";
+  if (s === "cancelling") return "warning";
+  if (s === "cancelled")  return "secondary";
   return "secondary";
 }
 

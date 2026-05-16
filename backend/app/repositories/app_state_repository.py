@@ -309,6 +309,26 @@ class AppStateRepository:
                 (chunk_count, entity_count, relationship_count, now, now, doc_id),
             )
 
+    def update_counts_progress(self, doc_id: int, *, chunk_count: int | None,
+                               entity_count: int, relationship_count: int) -> None:
+        """Live mid-extraction progress write — does NOT set processed_at, so
+        the DocumentsPage can show partial counts without prematurely flagging
+        the document as completed."""
+        now = _now()
+        with self._connect() as c:
+            if chunk_count is None:
+                c.execute(
+                    "UPDATE documents SET entity_count = ?, relationship_count = ?, "
+                    "updated_at = ? WHERE id = ?",
+                    (entity_count, relationship_count, now, doc_id),
+                )
+            else:
+                c.execute(
+                    "UPDATE documents SET chunk_count = ?, entity_count = ?, "
+                    "relationship_count = ?, updated_at = ? WHERE id = ?",
+                    (chunk_count, entity_count, relationship_count, now, doc_id),
+                )
+
     def delete_document(self, doc_id: int) -> bool:
         with self._connect() as c:
             cur = c.execute("DELETE FROM documents WHERE id = ?", (doc_id,))

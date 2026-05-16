@@ -48,6 +48,7 @@ class Neo4jManager:
                 settings.neo4j_uri,
                 auth=(settings.neo4j_username, settings.neo4j_password),
                 max_connection_lifetime=3600,
+                notifications_disabled_categories=["UNRECOGNIZED", "DEPRECATION"],
             )
             self._database = settings.neo4j_database
 
@@ -64,6 +65,7 @@ class Neo4jManager:
                 settings.neo4j_uri,
                 auth=(settings.neo4j_username, settings.neo4j_password),
                 max_connection_lifetime=3600,
+                notifications_disabled_categories=["UNRECOGNIZED", "DEPRECATION"],
             )
             self._database = settings.neo4j_database
 

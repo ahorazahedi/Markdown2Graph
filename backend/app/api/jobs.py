@@ -36,6 +36,39 @@ def get_job(run_id: str):
     return jsonify(run)
 
 
+@bp.post("/jobs/<run_id>/cancel")
+def cancel_job(run_id: str):
+    """Cooperatively cancel a running job.
+
+    The worker thread polls a flag between safe checkpoints (between
+    chunks / files / before each LLM call); an in-flight LLM call will
+    finish before the cancel takes effect. Returns the latest snapshot
+    so the UI can immediately show 'cancelling' instead of 'running'.
+    """
+    from ..services.job_registry import job_registry
+    state = AppStateRepository()
+    durable = state.get_run(run_id)
+    if not durable:
+        raise NotFoundError(f"job {run_id} not found")
+    if durable.get("status") in ("succeeded", "failed", "cancelled"):
+        return jsonify({"id": run_id, "status": durable["status"],
+                        "cancel_requested": False,
+                        "message": "job already finished"})
+    job = job_registry.request_cancel(run_id)
+    if job is None:
+        # in-process registry forgot it (e.g. backend restarted) — mark the
+        # durable row as cancelled so the UI doesn't show it running forever
+        state.finish_run(run_id, status="cancelled",
+                         error="cancel requested but worker was no longer in-process")
+        return jsonify({"id": run_id, "status": "cancelled",
+                        "cancel_requested": True,
+                        "message": "worker not in-process; marked cancelled"})
+    snap = job.snapshot()
+    return jsonify({"id": run_id, "status": snap["status"],
+                    "cancel_requested": True,
+                    "message": snap["message"]})
+
+
 @bp.get("/jobs/<run_id>/events")
 def list_events(run_id: str):
     state = AppStateRepository()

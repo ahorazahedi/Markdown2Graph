@@ -70,6 +70,18 @@
   .hairline { border-color: hsl(var(--border)); }
 }
 
+/* ---------- react-flow theming (edge labels readable in dark) ---------- */
+.react-flow__edge-textbg { fill: hsl(var(--card)); }
+.react-flow__edge-text   { fill: hsl(var(--foreground)); font-size: 10px; }
+.react-flow__controls,
+.react-flow__controls-button {
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  border-color: hsl(var(--border));
+}
+.react-flow__minimap { background: hsl(var(--card)); }
+.react-flow__attribution { display: none; }
+
 /* ---------- focus ring (consistent across primitives) ---------- */
 :where(button, [role="button"], input, textarea, select):focus-visible {
   outline: 1px solid hsl(var(--ring));

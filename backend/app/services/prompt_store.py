@@ -20,6 +20,7 @@ from jinja2 import Environment, StrictUndefined, TemplateSyntaxError
 from ..repositories.app_state_repository import AppStateRepository
 
 _PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
+_TEMPLATES_DIR = _PROMPTS_DIR / "templates"
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,8 @@ SPECS: tuple[PromptSpec, ...] = (
         filename="entity_extraction_instructions.md",
         description=(
             "Appended to LangChain's LLMGraphTransformer system prompt. Constrains "
-            "the model to your approved schema and the medical domain rules."
+            "the model to your approved schema. Domain-specific guidance lives in "
+            "the active preset (general / medical / your own custom override)."
         ),
         variables=(
             {"name": "allowed_nodes",
@@ -71,6 +73,48 @@ SPECS: tuple[PromptSpec, ...] = (
         description=(
             "Used by post-processing to canonicalize duplicate node labels and "
             "relationship types (e.g. 'Drug' vs 'Medication')."
+        ),
+        variables=(),
+    ),
+    PromptSpec(
+        key="chat_system",
+        filename="chat_system.md",
+        description=(
+            "System prompt for the chat / RAG answer generation. Receives "
+            "the retrieved context + the user question. Edit this to change "
+            "tone, citation style, or refusal behavior."
+        ),
+        variables=(
+            {"name": "context",
+             "description": "Concatenated retrieval payload (chunks + entities + summaries).",
+             "sample": "[chunk: drug X treats disease Y, see file ref1.md]"},
+            {"name": "question",
+             "description": "The user's (possibly rewritten) question.",
+             "sample": "Which drugs treat type-2 diabetes?"},
+        ),
+    ),
+    PromptSpec(
+        key="chat_question_rewrite",
+        filename="chat_question_rewrite.md",
+        description=(
+            "History-aware question rewriter. Turns 'and the second one?' "
+            "into a self-contained search query. Used before retrieval."
+        ),
+        variables=(
+            {"name": "history",
+             "description": "Recent chat turns formatted as a list.",
+             "sample": "user: list common diabetes drugs\nassistant: metformin, insulin, ..."},
+            {"name": "question",
+             "description": "The user's latest message.",
+             "sample": "what about side effects?"},
+        ),
+    ),
+    PromptSpec(
+        key="community_summary_system",
+        filename="community_summary_system.md",
+        description=(
+            "Used by post-processing to give each detected graph community a "
+            "human-readable title and 2-3 sentence summary."
         ),
         variables=(),
     ),
@@ -134,6 +178,53 @@ class PromptStore:
         # validate template parses
         self._validate(template)
         return self.state.save_prompt(key, template)
+
+    # ---------- presets ----------
+    def list_presets(self) -> list[dict]:
+        """Discover preset directories under app/prompts/templates/. Each
+        directory whose name doesn't start with `_` is a preset; for every
+        registered spec, report whether that preset has a template file."""
+        if not _TEMPLATES_DIR.is_dir():
+            return []
+        out: list[dict] = []
+        for d in sorted(_TEMPLATES_DIR.iterdir()):
+            if not d.is_dir() or d.name.startswith("_"):
+                continue
+            covers = []
+            for spec in SPECS:
+                covers.append({
+                    "key": spec.key,
+                    "has_template": (d / spec.filename).is_file(),
+                })
+            out.append({"name": d.name, "prompts": covers})
+        return out
+
+    def preset_prompts(self, name: str) -> dict[str, str]:
+        """Return {prompt_key: template_text} for every prompt the preset
+        defines. Missing files in the preset fall back to the disk default."""
+        d = _TEMPLATES_DIR / name
+        if not d.is_dir():
+            raise KeyError(f"preset {name!r} not found")
+        out: dict[str, str] = {}
+        for spec in SPECS:
+            src = d / spec.filename
+            if not src.is_file():
+                src = _PROMPTS_DIR / spec.filename
+            if not src.is_file():
+                continue
+            out[spec.key] = src.read_text(encoding="utf-8")
+        return out
+
+    def apply_preset(self, name: str) -> dict:
+        """Overwrite every prompt's stored template with the preset's content.
+        After this call, `is_custom` is 1 for every applied prompt."""
+        prompts = self.preset_prompts(name)
+        applied = []
+        for key, template in prompts.items():
+            self._validate(template)
+            self.state.save_prompt(key, template)
+            applied.append(key)
+        return {"preset": name, "applied": applied}
 
     def reset(self, key: str) -> dict | None:
         spec = _SPEC_BY_KEY.get(key)

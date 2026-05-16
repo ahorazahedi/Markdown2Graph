@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Loader2, ChevronRight, X } from "lucide-react";
+import { Loader2, ChevronRight, X, StopCircle } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api, JobRun } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { confirm } from "@/lib/confirm";
 
 /**
  * Fixed bottom banner that surfaces running jobs across every page.
@@ -16,20 +17,38 @@ export function ActiveJobsBanner() {
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState(false);
 
+  const [cancelling, setCancelling] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     let alive = true;
     const tick = async () => {
       try {
-        const r = await api.listJobs({ status: "running", limit: 10 });
+        // include cancelling jobs so the banner reflects the transition state
+        const [r1, r2] = await Promise.all([
+          api.listJobs({ status: "running", limit: 10 }),
+          api.listJobs({ status: "cancelling", limit: 10 }),
+        ]);
         if (!alive) return;
-        setRunning(r.items);
+        setRunning([...r1.items, ...r2.items]);
       } catch {}
     };
     tick();
-    // poll faster while we know something is running; back off when idle
     const id = window.setInterval(tick, 2000);
     return () => { alive = false; window.clearInterval(id); };
   }, []);
+
+  const onCancel = async (id: string) => {
+    const ok = await confirm({
+      title: "Cancel this job?",
+      description: "An in-flight LLM call finishes before the worker exits. Partial progress is preserved.",
+      confirmText: "Cancel job",
+      cancelText: "Keep running",
+      variant: "destructive",
+    });
+    if (!ok) return;
+    setCancelling((s) => new Set([...s, id]));
+    try { await api.cancelJob(id); } catch (e) { console.error(e); }
+  };
 
   const visible = running.filter((j) => !dismissed.has(j.id));
   if (visible.length === 0) return null;
@@ -53,6 +72,15 @@ export function ActiveJobsBanner() {
                 <div className="mt-1 truncate text-xs text-foreground">{j.message}</div>
               )}
             </div>
+            {j.status === "running" && !cancelling.has(j.id) && (
+              <button
+                onClick={() => onCancel(j.id)}
+                className="rounded-sm p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                title="Cancel job (cooperative — finishes current LLM call first)"
+              >
+                <StopCircle className="h-3.5 w-3.5" />
+              </button>
+            )}
             <button
               onClick={() => setDismissed((s) => new Set([...s, j.id]))}
               className="rounded-sm p-1 text-muted-foreground hover:bg-accent"

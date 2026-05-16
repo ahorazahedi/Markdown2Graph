@@ -40,7 +40,25 @@ def test_reset_restores_default(store):
     store.save("schema_discovery_system", "ZZZ")
     p = store.reset("schema_discovery_system")
     assert p["is_custom"] is False
-    assert "biomedical" in p["template"].lower()
+    assert "knowledge graph" in p["template"].lower()
+
+
+def test_list_presets_includes_general_and_medical(store):
+    names = {p["name"] for p in store.list_presets()}
+    assert {"general", "medical"}.issubset(names)
+
+
+def test_apply_preset_overwrites_all_prompts(store):
+    r = store.apply_preset("medical")
+    assert "schema_discovery_system" in r["applied"]
+    sd = store.get("schema_discovery_system")
+    assert "biomedical" in sd["template"].lower()
+    assert sd["is_custom"] is True
+
+
+def test_apply_unknown_preset_raises(store):
+    with pytest.raises(KeyError):
+        store.apply_preset("does-not-exist")
 
 
 def test_preview_with_override(store):

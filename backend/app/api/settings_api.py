@@ -375,6 +375,9 @@ def reset():
                 cleared[tgt] = "ok"
             elif tgt == "runs":
                 cleared[tgt] = state.clear_runs()
+                # also drop in-memory jobs so the Jobs/Banner views match the DB
+                from ..services.job_registry import job_registry
+                job_registry.clear()
             elif tgt == "llm_logs":
                 cleared[tgt] = LLMCallRepository().clear()
             elif tgt == "documents":

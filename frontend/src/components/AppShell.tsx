@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Database, FileText, GitBranch, Play, ScrollText, Settings2, FileCode2, ListChecks } from "lucide-react";
+import { Activity, Database, FileText, GitBranch, Play, ScrollText, Settings2, FileCode2, ListChecks, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, AppConfig } from "@/lib/api";
 import { guard } from "@/lib/unsavedGuard";
@@ -26,7 +26,7 @@ const NAV: { key: Route; label: string; icon: any; hint: string }[] = [
 ];
 
 function routeFromHash(): Route {
-  const h = window.location.hash.replace(/^#\/?/, "");
+  const h = window.location.hash.replace(/^#\/?/, "").split(/[?#]/)[0];
   return (NAV.find((n) => n.key === h)?.key ?? "documents") as Route;
 }
 
@@ -53,6 +53,15 @@ export function AppShell({ children, config, route, onRouteChange }: {
         </div>
         <nav className="flex-1 overflow-y-auto px-2 py-2">
           <div className="flex flex-col gap-0.5">
+            <a
+              href="#/chat"
+              className="group flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            >
+              <MessageSquare className="h-4 w-4 text-muted-foreground/80" />
+              <span className="flex-1 text-left">Chat</span>
+              <span className="text-2xs uppercase tracking-wider text-muted-foreground">/chat</span>
+            </a>
+            <div className="my-1 border-t border-border/60" />
             {NAV.map((item) => {
               const Icon = item.icon;
               const active = item.key === route;

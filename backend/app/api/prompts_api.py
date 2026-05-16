@@ -36,6 +36,22 @@ def save_prompt(key: str):
     return jsonify(saved)
 
 
+@bp.get("/prompts/presets")
+def list_presets():
+    return jsonify({"items": PromptStore().list_presets()})
+
+
+@bp.post("/prompts/presets/<name>/apply")
+def apply_preset(name: str):
+    try:
+        result = PromptStore().apply_preset(name)
+    except KeyError:
+        raise NotFoundError(f"preset {name!r} not found")
+    except ValueError as e:
+        raise ValidationError(str(e))
+    return jsonify(result)
+
+
 @bp.post("/prompts/<key>/reset")
 def reset_prompt(key: str):
     r = PromptStore().reset(key)

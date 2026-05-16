@@ -232,8 +232,9 @@ def reextract(doc_id: int):
     )
     pipeline = IngestionPipeline(cfg)
 
-    def runner(update):
-        return pipeline.run_documents([doc_id], reextract=True, progress=update)
+    def runner(update, cancelled):
+        return pipeline.run_documents([doc_id], reextract=True,
+                                      progress=update, is_cancelled=cancelled)
 
     job_id = job_registry.submit(runner)
     state.set_status(doc_id, "pending", job_id=job_id)

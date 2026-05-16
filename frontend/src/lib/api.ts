@@ -194,12 +194,63 @@ export const api = {
   stats: () => jsonFetch<Record<string, number>>("/api/graph/stats"),
   graphSchema: () => jsonFetch<{ labels: string[]; relationship_types: string[] }>("/api/graph/schema"),
   clearGraph: () => jsonFetch<{ status: string; cleared: boolean }>("/api/graph", { method: "DELETE" }),
-  exploreGraph: (params: { limit?: number; file_name?: string; label?: string } = {}) => {
+  runPostProcessing: (body: {
+    cleanup?: boolean; dedup?: boolean; orphans?: boolean;
+    communities?: boolean; summaries?: boolean; community_levels?: number;
+  } = {}) =>
+    jsonFetch<{
+      cleanup: any; dedup: any; orphans: any; communities: any;
+      errors: string[]; elapsed_seconds: number;
+    }>("/api/graph/post-process", { method: "POST", body: JSON.stringify(body) }),
+
+  // dedup + orphans
+  listDuplicates: (params: { limit?: number; min_size?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.limit != null) q.set("limit", String(params.limit));
+    if (params.min_size != null) q.set("min_size", String(params.min_size));
+    return jsonFetch<{ groups: DuplicateGroup[] }>(`/api/graph/duplicates?${q.toString()}`);
+  },
+  mergeDuplicates: (groups: { canonical_element_id: string; alias_element_ids: string[] }[]) =>
+    jsonFetch<{ merged_groups: any[] }>("/api/graph/duplicates/merge", {
+      method: "POST", body: JSON.stringify({ groups }),
+    }),
+  listOrphans: (params: { limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.limit != null) q.set("limit", String(params.limit));
+    return jsonFetch<{ orphans: OrphanEntity[] }>(`/api/graph/orphans?${q.toString()}`);
+  },
+  deleteOrphans: (element_ids?: string[]) =>
+    jsonFetch<{ deleted: number }>("/api/graph/orphans", {
+      method: "DELETE",
+      body: JSON.stringify(element_ids ? { element_ids } : {}),
+    }),
+
+  exploreGraph: (params: {
+    limit?: number; file_name?: string; label?: string;
+    include_structure?: boolean; include_communities?: boolean;
+  } = {}) => {
     const q = new URLSearchParams();
     if (params.limit != null) q.set("limit", String(params.limit));
     if (params.file_name) q.set("file_name", params.file_name);
     if (params.label) q.set("label", params.label);
+    if (params.include_structure) q.set("include_structure", "true");
+    if (params.include_communities) q.set("include_communities", "true");
     return jsonFetch<GraphExplore>(`/api/graph/explore?${q.toString()}`);
+  },
+
+  graphNeighborhood: (params: {
+    element_id: string; depth?: number; limit?: number;
+    include_structure?: boolean; include_communities?: boolean;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("element_id", params.element_id);
+    if (params.depth != null) q.set("depth", String(params.depth));
+    if (params.limit != null) q.set("limit", String(params.limit));
+    if (params.include_structure) q.set("include_structure", "true");
+    if (params.include_communities) q.set("include_communities", "true");
+    return jsonFetch<GraphExplore & { focal: string; depth: number }>(
+      `/api/graph/neighborhood?${q.toString()}`,
+    );
   },
 
   // llm audit
@@ -273,6 +324,15 @@ export const api = {
     jsonFetch<{ rendered: string }>(`/api/prompts/${encodeURIComponent(key)}/preview`, {
       method: "POST", body: JSON.stringify(body),
     }),
+  listPromptPresets: () =>
+    jsonFetch<{ items: { name: string; prompts: { key: string; has_template: boolean }[] }[] }>(
+      "/api/prompts/presets",
+    ),
+  applyPromptPreset: (name: string) =>
+    jsonFetch<{ preset: string; applied: string[] }>(
+      `/api/prompts/presets/${encodeURIComponent(name)}/apply`,
+      { method: "POST" },
+    ),
 
   // jobs (durable run history)
   listJobs: (params: { status?: string; limit?: number; offset?: number } = {}) => {
@@ -283,6 +343,10 @@ export const api = {
     return jsonFetch<{ items: JobRun[]; overview: JobOverview }>(`/api/jobs?${q.toString()}`);
   },
   getJob: (id: string) => jsonFetch<JobRun>(`/api/jobs/${id}`),
+  cancelJob: (id: string) =>
+    jsonFetch<{ id: string; status: string; cancel_requested: boolean; message: string }>(
+      `/api/jobs/${id}/cancel`, { method: "POST" },
+    ),
   listJobEvents: (id: string, after = 0, level?: string) => {
     const q = new URLSearchParams();
     q.set("after", String(after));
@@ -291,6 +355,51 @@ export const api = {
       `/api/jobs/${id}/events?${q.toString()}`,
     );
   },
+
+  // identity (stubbed pre-auth)
+  me: () => jsonFetch<{ user_id: string; role: "admin" | "user" }>("/api/me"),
+
+  // chat
+  chatHealth: () =>
+    jsonFetch<{ ok: boolean; messages: string[]; indexed_dim?: number; chunks?: number }>(
+      "/api/chat/health",
+    ),
+  listChatSessions: (params: { archived?: boolean; limit?: number; offset?: number; search?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.archived) q.set("archived", "true");
+    if (params.limit != null) q.set("limit", String(params.limit));
+    if (params.offset != null) q.set("offset", String(params.offset));
+    if (params.search) q.set("search", params.search);
+    return jsonFetch<{ items: ChatSession[] }>(`/api/chat/sessions?${q.toString()}`);
+  },
+  createChatSession: (body: Partial<Pick<ChatSession,
+      "title" | "mode" | "model" | "embedding_provider" | "embedding_model" | "document_names">> = {}) =>
+    jsonFetch<ChatSession>("/api/chat/sessions", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  getChatSession: (id: string) =>
+    jsonFetch<ChatSession & { messages: ChatMessage[] }>(`/api/chat/sessions/${id}`),
+  patchChatSession: (id: string, body: Partial<ChatSession>) =>
+    jsonFetch<ChatSession>(`/api/chat/sessions/${id}`, {
+      method: "PATCH", body: JSON.stringify(body),
+    }),
+  deleteChatSession: (id: string) =>
+    jsonFetch<{ deleted: string }>(`/api/chat/sessions/${id}`, { method: "DELETE" }),
+  clearChatSession: (id: string) =>
+    jsonFetch<{ cleared: string }>(`/api/chat/sessions/${id}/clear`, { method: "POST" }),
+  sendChatMessage: (id: string, body: { question: string; mode?: string; document_names?: string[] }) =>
+    jsonFetch<ChatAskResponse>(`/api/chat/sessions/${id}/messages`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  messageCitations: (mid: number) =>
+    jsonFetch<{ message_id: number; citations: any[]; raw: any }>(
+      `/api/chat/messages/${mid}/citations`,
+    ),
+  rateMessage: (mid: number, rating: -1 | 0 | 1, comment?: string) =>
+    jsonFetch<{ message_id: number; rating: number }>(
+      `/api/chat/messages/${mid}/feedback`,
+      { method: "POST", body: JSON.stringify({ rating, comment }) },
+    ),
 
   // runtime knobs (extraction retry etc.) — distinct from /api/settings (connection)
   listRuntime: () => jsonFetch<{ items: RuntimeSettingSpec[] }>("/api/runtime"),
@@ -315,7 +424,7 @@ export interface RuntimeSettingSpec {
 export interface JobRun {
   id: string;
   kind: string;
-  status: "queued" | "running" | "succeeded" | "failed";
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelling" | "cancelled";
   progress: number;
   stage: string;
   message: string;
@@ -398,6 +507,91 @@ export interface ResetCountEntry {
 }
 
 export type ResetCounts = Record<ResetTarget, ResetCountEntry>;
+
+export interface DuplicateGroupMember {
+  id: string;
+  element_id: string;
+  labels: string[];
+  chunk_count: number;
+  rel_count: number;
+  description: string | null;
+}
+
+export interface DuplicateGroup {
+  key: string;
+  members: DuplicateGroupMember[];
+}
+
+export interface ChatSession {
+  id: string;
+  user_id: string;
+  title: string;
+  mode: string;
+  model: string | null;
+  embedding_provider: string | null;
+  embedding_model: string | null;
+  document_names: string[];
+  pinned: boolean;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+  last_message_at: string | null;
+  message_count: number;
+  total_tokens: number;
+  meta: Record<string, any>;
+}
+
+export interface ChatMessageEntities {
+  entityids: string[];
+  relationshipids: string[];
+  nodes?: { id: string; elementId: string; labels: string[]; description: string | null }[];
+  relationships?: { startId: string; endId: string; type: string; elementId: string }[];
+}
+
+export interface ChatMessage {
+  id: number;
+  session_id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  mode: string | null;
+  model: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  response_time_ms: number | null;
+  llm_call_id: number | null;
+  error: string | null;
+  created_at: string;
+  sources: { source_name: string; chunk_ids: string[] }[];
+  entities: ChatMessageEntities | Record<string, any>;
+  nodedetails: { chunkdetails?: { id: string; score: number | null }[]; entitydetails?: any[]; communitydetails?: any[] };
+  metric: Record<string, any>;
+  meta: Record<string, any>;
+}
+
+export interface ChatAskResponse {
+  session_id: string;
+  user_message_id: number;
+  assistant_message_id: number;
+  message: string;
+  info: {
+    sources: { source_name: string; chunk_ids: string[] }[];
+    nodedetails: any;
+    entities: ChatMessageEntities;
+    total_tokens: number | null;
+    response_time_ms: number | null;
+    mode: string;
+    model: string | null;
+    rewritten_question: string | null;
+  };
+}
+
+export interface OrphanEntity {
+  id: string;
+  element_id: string;
+  labels: string[];
+  description: string | null;
+}
 
 export interface PromptRow {
   key: string;

@@ -64,6 +64,38 @@ SPECS: tuple[SettingSpec, ...] = (
         ),
         group="extraction",
     ),
+    SettingSpec(
+        key="chunk_token_size",
+        kind="int", default=600, min=50, max=8000,
+        label="Chunk size (tokens)",
+        description=(
+            "Target token count per chunk produced by the recursive splitter. "
+            "Smaller = more granular chunks and more LLM calls; larger = fewer "
+            "calls but more context per call. Applied on the next ingest run."
+        ),
+        group="chunking",
+    ),
+    SettingSpec(
+        key="chunk_overlap",
+        kind="int", default=80, min=0, max=2000,
+        label="Chunk overlap (tokens)",
+        description=(
+            "Token overlap between consecutive chunks. Helps the LLM keep "
+            "context across boundaries. Must be smaller than chunk size."
+        ),
+        group="chunking",
+    ),
+    SettingSpec(
+        key="chunks_to_combine",
+        kind="int", default=1, min=1, max=10,
+        label="Chunks to combine per extraction call",
+        description=(
+            "Number of adjacent chunks merged into one LLM extraction window. "
+            "1 = one chunk per call. Larger values reduce LLM cost but mix "
+            "more context per call."
+        ),
+        group="chunking",
+    ),
 )
 
 _SPEC_BY_KEY: dict[str, SettingSpec] = {s.key: s for s in SPECS}

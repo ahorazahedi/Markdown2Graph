@@ -11,9 +11,9 @@ log = logging.getLogger(__name__)
 class PostProcessor:
     """Post-extraction tasks: vector index + chunk-similarity edges.
 
-    Entity-level embeddings and full community detection (Leiden) are
-    intentionally out of scope for v1 — they require GDS plugin and
-    significant tuning for medical content. Hooks left for v2.
+    LLM-driven label cleanup + WCC community detection live in
+    PostProcessingService; the Leiden hierarchy from GDS is intentionally
+    skipped because it isn't available on Neo4j Community Edition.
     """
 
     def __init__(self):
@@ -31,6 +31,9 @@ class PostProcessor:
             progress(JobUpdate(stage="post_processing", message="creating chunk vector index", progress=0.92))
         self.repo.create_chunk_vector_index(s.embedding_dimension)
         out["vector_index"] = True
+        # Chat / RAG fulltext indexes — cheap to create, idempotent.
+        self.repo.create_chat_indexes()
+        out["chat_indexes"] = True
 
         if s.enable_similar_chunks:
             if progress:

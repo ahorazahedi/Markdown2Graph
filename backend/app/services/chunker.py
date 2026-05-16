@@ -36,8 +36,25 @@ class MarkdownChunker:
 
     def __init__(self, chunk_size: int | None = None, chunk_overlap: int | None = None):
         s = get_settings()
-        self.chunk_size = chunk_size if chunk_size is not None else s.chunk_token_size
-        self.chunk_overlap = chunk_overlap if chunk_overlap is not None else s.chunk_overlap
+        # Runtime tunables (SettingsService) override env-baked defaults.
+        try:
+            from .settings_service import SettingsService
+            svc = SettingsService()
+            rt_size = svc.get("chunk_token_size")
+            rt_overlap = svc.get("chunk_overlap")
+        except Exception:
+            rt_size = None
+            rt_overlap = None
+        self.chunk_size = (
+            chunk_size if chunk_size is not None
+            else (rt_size if rt_size else s.chunk_token_size)
+        )
+        self.chunk_overlap = (
+            chunk_overlap if chunk_overlap is not None
+            else (rt_overlap if rt_overlap is not None else s.chunk_overlap)
+        )
+        if self.chunk_overlap >= self.chunk_size:
+            self.chunk_overlap = max(0, self.chunk_size // 4)
         self.max_total = s.max_token_chunk_size
         self._splitter = TokenTextSplitter(
             chunk_size=self.chunk_size,

@@ -12,6 +12,7 @@ from .prompts_api import bp as prompts_bp
 from .jobs import bp as jobs_bp
 from .settings_api import bp as settings_bp
 from .runtime_settings import bp as runtime_bp
+from .chat_api import bp as chat_bp
 
 
 def register_blueprints(app: Flask) -> None:
@@ -27,3 +28,4 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(jobs_bp, url_prefix="/api")
     app.register_blueprint(settings_bp, url_prefix="/api")
     app.register_blueprint(runtime_bp, url_prefix="/api")
+    app.register_blueprint(chat_bp, url_prefix="/api")

@@ -40,11 +40,12 @@ def run_ingest():
             if not state.get_document(did):
                 raise ValidationError(f"document {did} not found")
 
-        def runner(update):
-            return pipeline.run_documents(ids, reextract=reextract, progress=update)
+        def runner(update, cancelled):
+            return pipeline.run_documents(ids, reextract=reextract,
+                                          progress=update, is_cancelled=cancelled)
     else:
-        def runner(update):
-            return pipeline.run_pending(progress=update)
+        def runner(update, cancelled):
+            return pipeline.run_pending(progress=update, is_cancelled=cancelled)
 
     job_id = job_registry.submit(runner)
     return jsonify({"job_id": job_id, "document_ids": doc_ids or "all-pending",

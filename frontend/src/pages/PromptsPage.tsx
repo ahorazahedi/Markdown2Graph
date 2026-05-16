@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Save, RotateCcw, Play, Check } from "lucide-react";
+import { Save, RotateCcw, Play, Check, Library } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,6 +22,8 @@ export function PromptsPage() {
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [presets, setPresets] = useState<{ name: string }[]>([]);
+  const [presetChoice, setPresetChoice] = useState("");
 
   const refresh = async () => {
     const r = await api.listPrompts();
@@ -31,6 +33,34 @@ export function PromptsPage() {
     }
   };
   useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    api.listPromptPresets()
+      .then((r) => setPresets(r.items.map((p) => ({ name: p.name }))))
+      .catch(() => setPresets([]));
+  }, []);
+
+  const applyPreset = async () => {
+    if (!presetChoice) return;
+    const ok = await confirm({
+      title: `Load "${presetChoice}" preset?`,
+      description: "Replaces every prompt template with the preset's content. Your current edits will be overwritten.",
+      confirmText: "Load preset",
+      variant: "destructive",
+    });
+    if (!ok) return;
+    setBusy(true); setError(null);
+    try {
+      await api.applyPromptPreset(presetChoice);
+      await refresh();
+      // force editor to reload the now-updated active prompt
+      const stillActive = activeKey;
+      setActiveKey(null);
+      setTimeout(() => setActiveKey(stillActive), 0);
+      setSavedAt(Date.now());
+    } catch (e: any) {
+      setError(String(e.message || e));
+    } finally { setBusy(false); }
+  };
 
   const active = useMemo(() => items.find((p) => p.key === activeKey) || null, [items, activeKey]);
 
@@ -118,6 +148,25 @@ export function PromptsPage() {
           description="System prompts that drive schema discovery and entity extraction. Templates use Jinja2; variables are injected at runtime."
           actions={
             <>
+              {presets.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <Library className="h-3.5 w-3.5 text-muted-foreground" />
+                  <select
+                    className="h-8 rounded-sm border border-border bg-background px-2 text-xs"
+                    value={presetChoice}
+                    onChange={(e) => setPresetChoice(e.target.value)}
+                  >
+                    <option value="">load preset…</option>
+                    {presets.map((p) => (
+                      <option key={p.name} value={p.name}>{p.name}</option>
+                    ))}
+                  </select>
+                  <Button size="sm" variant="outline" onClick={applyPreset}
+                          disabled={!presetChoice || busy}>
+                    Apply
+                  </Button>
+                </div>
+              )}
               {savedAt && Date.now() - savedAt < 4000 && (
                 <span className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Check className="h-3 w-3" /> saved
