@@ -84,6 +84,26 @@ export const api = {
   llmTags: () => jsonFetch<{ tags: string[] }>("/api/llm-calls/tags"),
   llmStats: () => jsonFetch<LLMLogStats>("/api/llm-calls/stats"),
   llmClear: () => jsonFetch<{ deleted: number }>("/api/llm-calls", { method: "DELETE" }),
+
+  uploadFiles: async (entries: { file: File; relPath: string }[]) => {
+    const fd = new FormData();
+    for (const e of entries) {
+      fd.append("files", e.file, e.file.name);
+      fd.append("paths", e.relPath);
+    }
+    const r = await fetch("/api/upload", { method: "POST", body: fd });
+    if (!r.ok) {
+      let detail = "";
+      try { detail = JSON.stringify(await r.json()); } catch { detail = await r.text(); }
+      throw new Error(`${r.status} ${r.statusText} — ${detail}`);
+    }
+    return (await r.json()) as {
+      path: string;
+      file_count: number;
+      bytes: number;
+      files: string[];
+    };
+  },
 };
 
 export interface LLMCallRow {

@@ -6,6 +6,7 @@ from .schema import bp as schema_bp
 from .ingest import bp as ingest_bp
 from .graph import bp as graph_bp
 from .llm_calls import bp as llm_calls_bp
+from .upload import bp as upload_bp
 
 
 def register_blueprints(app: Flask) -> None:
@@ -15,3 +16,4 @@ def register_blueprints(app: Flask) -> None:
     app.register_blueprint(ingest_bp, url_prefix="/api")
     app.register_blueprint(graph_bp, url_prefix="/api")
     app.register_blueprint(llm_calls_bp, url_prefix="/api")
+    app.register_blueprint(upload_bp, url_prefix="/api")

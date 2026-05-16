@@ -21,6 +21,7 @@ def create_app():
 
     app = Flask(__name__)
     app.config["SETTINGS"] = settings
+    app.config["MAX_CONTENT_LENGTH"] = 600 * 1024 * 1024  # 600 MB; per-request
 
     CORS(
         app,
