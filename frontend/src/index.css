@@ -2,50 +2,72 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------- design tokens ---------- */
 @layer base {
   :root {
     --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
+    --foreground: 222 24% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --primary: 221 83% 53%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222 47% 11%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
-    --accent: 210 40% 96%;
-    --accent-foreground: 222 47% 11%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 221 83% 53%;
-    --radius: 0.6rem;
+    --card-foreground: 222 24% 12%;
+    --primary: 222 47% 11%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 24% 12%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 220 14% 94%;
+    --accent-foreground: 222 24% 12%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 142 71% 38%;
+    --warning: 38 92% 50%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 220 14% 70%;
+    --radius: 0.25rem;
   }
   .dark {
-    --background: 222 47% 5%;
-    --foreground: 210 40% 98%;
-    --card: 222 47% 7%;
-    --card-foreground: 210 40% 98%;
-    --primary: 217 91% 60%;
-    --primary-foreground: 222 47% 11%;
-    --secondary: 217 33% 15%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217 33% 15%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 33% 18%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 63% 31%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 33% 18%;
-    --input: 217 33% 18%;
-    --ring: 217 91% 60%;
+    --background: 222 24% 6%;
+    --foreground: 220 14% 96%;
+    --card: 222 24% 8%;
+    --card-foreground: 220 14% 96%;
+    --primary: 220 14% 96%;
+    --primary-foreground: 222 24% 8%;
+    --secondary: 222 18% 14%;
+    --secondary-foreground: 220 14% 96%;
+    --muted: 222 18% 14%;
+    --muted-foreground: 220 9% 62%;
+    --accent: 222 18% 16%;
+    --accent-foreground: 220 14% 96%;
+    --destructive: 0 70% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 142 65% 42%;
+    --warning: 38 92% 55%;
+    --border: 222 16% 18%;
+    --input: 222 16% 18%;
+    --ring: 222 16% 30%;
   }
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Inter", "SF Pro Text",
+      "Segoe UI", Roboto, sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    text-rendering: optimizeLegibility;
   }
-  *::-webkit-scrollbar { width: 10px; height: 10px; }
-  *::-webkit-scrollbar-thumb { @apply bg-border rounded; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { @apply bg-border rounded-sm; }
+  *::-webkit-scrollbar-thumb:hover { @apply bg-muted-foreground/30; }
+  hr { @apply border-border; }
+}
+
+/* ---------- utilities ---------- */
+@layer utilities {
+  .text-xxs { font-size: 0.6875rem; line-height: 1rem; }
+  .hairline { border-color: hsl(var(--border)); }
+}
+
+/* ---------- focus ring (consistent across primitives) ---------- */
+:where(button, [role="button"], input, textarea, select):focus-visible {
+  outline: 1px solid hsl(var(--ring));
+  outline-offset: 1px;
 }

@@ -57,6 +57,10 @@ export function LLMCallsPage() {
 
   return (
     <div className="space-y-4">
+      <div className="mb-2">
+        <h1 className="text-xl font-semibold tracking-tightish">LLM Calls</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Every prompt sent to the LLM and the response received, tagged by purpose.</p>
+      </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
         {[
           ["Total", stats?.total],
