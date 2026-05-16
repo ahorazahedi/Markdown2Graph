@@ -40,3 +40,9 @@ pnpm-debug.log*
 
 # Neo4j docker volumes (if mounted locally)
 neo4j_data/
+
+# SQLite audit log
+backend/data/
+*.db
+*.db-wal
+*.db-shm

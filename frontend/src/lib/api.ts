@@ -68,4 +68,52 @@ export const api = {
   schema: () => jsonFetch<{ labels: string[]; relationship_types: string[] }>("/api/graph/schema"),
   documents: () => jsonFetch<{ documents: any[] }>("/api/graph/documents"),
   clear: () => jsonFetch<{ status: string; cleared: boolean }>("/api/graph", { method: "DELETE" }),
+
+  // ---- llm call audit ----
+  llmCalls: (params: { tag?: string; status?: string; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.tag) q.set("tag", params.tag);
+    if (params.status) q.set("status", params.status);
+    if (params.limit != null) q.set("limit", String(params.limit));
+    if (params.offset != null) q.set("offset", String(params.offset));
+    return jsonFetch<{ items: LLMCallRow[]; total: number; limit: number; offset: number }>(
+      `/api/llm-calls?${q.toString()}`,
+    );
+  },
+  llmCall: (id: number) => jsonFetch<LLMCallDetail>(`/api/llm-calls/${id}`),
+  llmTags: () => jsonFetch<{ tags: string[] }>("/api/llm-calls/tags"),
+  llmStats: () => jsonFetch<LLMLogStats>("/api/llm-calls/stats"),
+  llmClear: () => jsonFetch<{ deleted: number }>("/api/llm-calls", { method: "DELETE" }),
 };
+
+export interface LLMCallRow {
+  id: number;
+  created_at: string;
+  finished_at: string | null;
+  tag: string;
+  model: string | null;
+  status: "pending" | "success" | "error";
+  latency_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  error: string | null;
+}
+
+export interface LLMCallDetail extends LLMCallRow {
+  base_url: string | null;
+  provider: string | null;
+  request_json: any;
+  response_text: string | null;
+  response_json: any;
+  extra_json: any;
+}
+
+export interface LLMLogStats {
+  total: number;
+  ok: number;
+  err: number;
+  pending: number;
+  tokens: number;
+  avg_latency_ms: number;
+}

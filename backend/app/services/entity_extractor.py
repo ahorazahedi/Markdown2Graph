@@ -50,10 +50,14 @@ class EntityExtractor:
         )
 
     async def extract_async(self, docs: List[Document]):
-        return await self.transformer.aconvert_to_graph_documents(docs)
+        from ..llm import with_tag
+        with with_tag("entity_extraction"):
+            return await self.transformer.aconvert_to_graph_documents(docs)
 
     def extract(self, docs: List[Document]):
-        return self.transformer.convert_to_graph_documents(docs)
+        from ..llm import with_tag
+        with with_tag("entity_extraction"):
+            return self.transformer.convert_to_graph_documents(docs)
 
     @staticmethod
     def _sanitize(text: str) -> str:

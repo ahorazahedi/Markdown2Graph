@@ -11,25 +11,39 @@ from typing import Tuple
 from langchain_openai import ChatOpenAI
 
 from ..config import Settings, get_settings
+from .recorder import LLMCallRecorder
 
 
-def build_chat_llm(settings: Settings | None = None) -> ChatOpenAI:
+def build_chat_llm(settings: Settings | None = None, *, tag: str | None = None) -> ChatOpenAI:
+    """Build a chat LLM with the audit-log callback attached.
+
+    `tag` is optional — pass it for one-off calls outside a `with_tag(...)` block.
+    """
     s = settings or get_settings()
     if not s.effective_llm_api_key:
         raise RuntimeError("LLM api key missing — set OPENROUTER_API_KEY or LLM_API_KEY in .env")
-    return ChatOpenAI(
+
+    recorder = LLMCallRecorder(model=s.llm_model, base_url=s.effective_llm_base_url,
+                                provider="openrouter" if "openrouter" in s.effective_llm_base_url else "openai-compatible")
+    callbacks = [recorder] if s.llm_log_enabled else []
+
+    llm = ChatOpenAI(
         model=s.llm_model,
         api_key=s.effective_llm_api_key,
         base_url=s.effective_llm_base_url,
         temperature=s.llm_temperature,
         max_tokens=s.llm_max_tokens,
         timeout=s.llm_timeout,
-        # OpenRouter accepts these for attribution; harmless on LM Studio.
+        callbacks=callbacks,
         default_headers={
             "HTTP-Referer": "https://github.com/text2graph",
             "X-Title": "text2graph-medical",
         },
     )
+    if tag:
+        # capture tag in metadata so it shows up alongside the call in storage
+        llm = llm.with_config({"tags": [tag], "metadata": {"text2graph_tag": tag}})
+    return llm
 
 
 @lru_cache(maxsize=1)

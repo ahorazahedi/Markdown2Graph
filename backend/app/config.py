@@ -66,6 +66,11 @@ class Settings(BaseSettings):
 
     domain: str = "medical"
 
+    # LLM call audit log
+    llm_log_db_path: str = "backend/data/llm_calls.db"
+    llm_log_enabled: bool = True
+    llm_log_max_body_chars: int = 200000
+
     @field_validator("log_level")
     @classmethod
     def _upper_log(cls, v: str) -> str:

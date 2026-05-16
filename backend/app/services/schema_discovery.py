@@ -43,7 +43,7 @@ class SchemaDiscoveryService:
 
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        from ..llm import build_chat_llm
+        from ..llm import build_chat_llm, with_tag
         from ..prompts import SCHEMA_DISCOVERY_SYSTEM
 
         sys_prompt = SCHEMA_DISCOVERY_SYSTEM
@@ -52,9 +52,10 @@ class SchemaDiscoveryService:
 
         llm = build_chat_llm()
         log.info("schema_discovery: sampling %d/%d files (%d chars)", len(docs), len(files), len(joined))
-        resp = llm.invoke(
-            [SystemMessage(content=sys_prompt), HumanMessage(content=joined)]
-        )
+        with with_tag("schema_discovery"):
+            resp = llm.invoke(
+                [SystemMessage(content=sys_prompt), HumanMessage(content=joined)]
+            )
         raw = resp.content if hasattr(resp, "content") else str(resp)
 
         parsed = self._parse_json(raw)
