@@ -386,18 +386,19 @@ class ChatService:
             refresh_schema=True,
         )
         llm = build_chat_llm(self.settings, tag="chat_graph")
+        # validate_cypher=True calls apoc.meta.schema() — APOC required.
+        # We probe once and pick the safer variant. Without validation the
+        # LLM-generated Cypher may query non-existent labels but the mode
+        # still works on Community Edition.
+        validate = self._apoc_available()
+        kwargs = dict(graph=graph, llm=llm, validate_cypher=validate,
+                      return_intermediate_steps=True)
         try:
             chain = GraphCypherQAChain.from_llm(
-                graph=graph, llm=llm, validate_cypher=True,
-                return_intermediate_steps=True,
-                allow_dangerous_requests=True,
+                **kwargs, allow_dangerous_requests=True,
             )
         except TypeError:
-            # older langchain-neo4j: no allow_dangerous_requests kw
-            chain = GraphCypherQAChain.from_llm(
-                graph=graph, llm=llm, validate_cypher=True,
-                return_intermediate_steps=True,
-            )
+            chain = GraphCypherQAChain.from_llm(**kwargs)
 
         with with_tag("chat_graph"):
             res = chain.invoke({"query": question})
@@ -543,6 +544,18 @@ class ChatService:
             f"{(m.get('role') or 'user')}: {(m.get('content') or '').strip()}"
             for m in tail
         )
+
+    @staticmethod
+    def _apoc_available() -> bool:
+        try:
+            with neo4j_manager.driver.session(database=neo4j_manager.database) as s:
+                row = s.run(
+                    "SHOW PROCEDURES YIELD name WHERE name = 'apoc.meta.schema' "
+                    "RETURN count(*) AS n"
+                ).single()
+            return bool(row and int(row["n"]) > 0)
+        except Exception:
+            return False
 
     @staticmethod
     def _extract_usage(msg) -> dict:

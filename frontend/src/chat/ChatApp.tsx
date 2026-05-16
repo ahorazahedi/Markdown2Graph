@@ -360,7 +360,8 @@ function ChatPage({ sessionId, onSessionChange }: { sessionId: string; onSession
           {messages.map((m) => (
             <MessageBubble key={m.id} m={m}
                            onEntityClick={setEntityDrawerEid}
-                           onSourceClick={() => setChunkDrawerMid(m.id)} />
+                           onSourceClick={m.role === "assistant" && m.id > 0
+                             ? () => setChunkDrawerMid(m.id) : undefined} />
           ))}
           {sending && streamingText && (
             <StreamingBubble text={streamingText} />
