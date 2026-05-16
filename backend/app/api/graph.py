@@ -102,6 +102,8 @@ def post_process():
         orphans=bool(body.get("orphans", False)),
         communities=bool(body.get("communities", True)),
         summaries=bool(body.get("summaries", True)),
+        entity_embeddings=bool(body.get("entity_embeddings", True)),
+        community_embeddings=bool(body.get("community_embeddings", True)),
         community_levels=int(body.get("community_levels", 2) or 2),
     )
     return jsonify({
@@ -109,6 +111,8 @@ def post_process():
         "dedup": rep.dedup,
         "orphans": rep.orphans,
         "communities": rep.communities,
+        "entity_embeddings": rep.entity_embeddings,
+        "community_embeddings": rep.community_embeddings,
         "errors": rep.errors,
         "elapsed_seconds": rep.elapsed_seconds,
     })

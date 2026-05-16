@@ -28,10 +28,21 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import {
-  api, ChatAskResponse, ChatMessage, ChatSession,
+  api, ChatAskResponse, ChatMessage, ChatSession, DocumentRow,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { confirm } from "@/lib/confirm";
+
+const MODE_LABELS: Record<string, string> = {
+  vector: "vector",
+  fulltext: "hybrid (fulltext)",
+  graph_vector: "graph + vector",
+  graph_vector_fulltext: "graph + hybrid (default)",
+  entity_vector: "entity-centric",
+  global_vector: "community / global",
+  graph: "text → Cypher",
+};
+const MODE_DOC_FILTER = new Set(["vector", "graph_vector"]);
 
 const HASH_PREFIX = "#/chat";
 
@@ -221,8 +232,11 @@ function ChatPage({ sessionId, onSessionChange }: { sessionId: string; onSession
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [entityDrawerEid, setEntityDrawerEid] = useState<string | null>(null);
+  const [chunkDrawerMid, setChunkDrawerMid] = useState<number | null>(null);
+  const [docs, setDocs] = useState<DocumentRow[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -232,18 +246,21 @@ function ChatPage({ sessionId, onSessionChange }: { sessionId: string; onSession
   }, [sessionId]);
 
   useEffect(() => { load().catch(console.error); }, [load]);
+  useEffect(() => {
+    api.listDocuments().then((r) => setDocs(r.items)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length, sending]);
+  }, [messages.length, sending, streamingText]);
 
   const send = async () => {
     const q = input.trim();
-    if (!q || sending) return;
+    if (!q || sending || !session) return;
     setErr(null);
     setSending(true);
-    // optimistic user turn
+    setStreamingText("");
     const optimistic: ChatMessage = {
       id: -Date.now(), session_id: sessionId, role: "user", content: q,
       mode: null, model: null, prompt_tokens: null, completion_tokens: null,
@@ -255,10 +272,22 @@ function ChatPage({ sessionId, onSessionChange }: { sessionId: string; onSession
     setMessages((m) => [...m, optimistic]);
     setInput("");
     try {
-      const r: ChatAskResponse = await api.sendChatMessage(sessionId, { question: q });
-      await load();
-      onSessionChange();
-      void r;
+      await streamChat(sessionId, {
+        question: q,
+        mode: session.mode,
+        document_names: session.document_names || [],
+        onToken: (t) => setStreamingText((s) => s + t),
+        onDone: async () => {
+          setStreamingText("");
+          await load();
+          onSessionChange();
+        },
+        onError: (e) => {
+          setErr(e);
+          setMessages((m) => m.filter((x) => x.id !== optimistic.id));
+          setInput(q);
+        },
+      });
     } catch (e: any) {
       setErr(e?.message || String(e));
       setMessages((m) => m.filter((x) => x.id !== optimistic.id));
@@ -274,6 +303,18 @@ function ChatPage({ sessionId, onSessionChange }: { sessionId: string; onSession
     onSessionChange();
   };
 
+  const onModeChange = async (mode: string) => {
+    if (!session || mode === session.mode) return;
+    const updated = await api.patchChatSession(sessionId, { mode } as any);
+    setSession(updated);
+  };
+
+  const onDocsChange = async (names: string[]) => {
+    if (!session) return;
+    const updated = await api.patchChatSession(sessionId, { document_names: names } as any);
+    setSession(updated);
+  };
+
   if (!session) {
     return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading…</div>;
   }
@@ -281,13 +322,29 @@ function ChatPage({ sessionId, onSessionChange }: { sessionId: string; onSession
   return (
     <div className="grid h-full grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
       {/* header */}
-      <header className="flex items-center gap-3 border-b border-border bg-card/30 px-5 py-3">
+      <header className="flex flex-wrap items-center gap-3 border-b border-border bg-card/30 px-5 py-3">
         <Input
           defaultValue={session.title}
           onBlur={onTitleBlur}
           className="h-7 max-w-md border-transparent bg-transparent px-1 text-sm font-semibold hover:border-border"
         />
-        <Badge variant="outline" className="text-2xs">{session.mode}</Badge>
+        <select
+          value={session.mode}
+          onChange={(e) => onModeChange(e.target.value)}
+          className="h-7 rounded-sm border border-border bg-background px-2 text-2xs"
+          title="Retrieval mode"
+        >
+          {Object.keys(MODE_LABELS).map((m) => (
+            <option key={m} value={m}>{MODE_LABELS[m]}</option>
+          ))}
+        </select>
+        {MODE_DOC_FILTER.has(session.mode) && (
+          <DocFilterChip
+            docs={docs}
+            selected={session.document_names || []}
+            onChange={onDocsChange}
+          />
+        )}
         {session.model && <Badge variant="secondary" className="font-mono text-2xs">{session.model}</Badge>}
         <span className="ml-auto text-2xs text-muted-foreground">{session.message_count} messages</span>
       </header>
@@ -301,12 +358,17 @@ function ChatPage({ sessionId, onSessionChange }: { sessionId: string; onSession
             </p>
           )}
           {messages.map((m) => (
-            <MessageBubble key={m.id} m={m} onEntityClick={setEntityDrawerEid} />
+            <MessageBubble key={m.id} m={m}
+                           onEntityClick={setEntityDrawerEid}
+                           onSourceClick={() => setChunkDrawerMid(m.id)} />
           ))}
-          {sending && (
+          {sending && streamingText && (
+            <StreamingBubble text={streamingText} />
+          )}
+          {sending && !streamingText && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              retrieving + answering…
+              retrieving…
             </div>
           )}
           {err && (
@@ -342,14 +404,22 @@ function ChatPage({ sessionId, onSessionChange }: { sessionId: string; onSession
           onClose={() => setEntityDrawerEid(null)}
         />
       )}
+      {chunkDrawerMid != null && (
+        <CitationDrawer
+          messageId={chunkDrawerMid}
+          onClose={() => setChunkDrawerMid(null)}
+        />
+      )}
     </div>
   );
 }
 
 // ----------------- Single message bubble -----------------
 
-function MessageBubble({ m, onEntityClick }: {
-  m: ChatMessage; onEntityClick: (eid: string) => void;
+function MessageBubble({ m, onEntityClick, onSourceClick }: {
+  m: ChatMessage;
+  onEntityClick: (eid: string) => void;
+  onSourceClick?: () => void;
 }) {
   const isUser = m.role === "user";
   const ent = (m.entities as any) || {};
@@ -385,9 +455,14 @@ function MessageBubble({ m, onEntityClick }: {
             {sources.length > 0 && (
               <CitationRow label="Sources">
                 {sources.map((s) => (
-                  <Badge key={s.source_name} variant="outline" className="text-2xs font-mono">
+                  <button
+                    key={s.source_name}
+                    onClick={onSourceClick}
+                    className="rounded-sm border border-border bg-background px-1.5 py-0.5 text-2xs font-mono hover:bg-accent"
+                    title="Show chunk text"
+                  >
                     {s.source_name} · {s.chunk_ids.length}
-                  </Badge>
+                  </button>
                 ))}
               </CitationRow>
             )}
@@ -498,6 +573,216 @@ function EntityDrawer({ elementId, onClose }: { elementId: string; onClose: () =
 }
 
 // ----------------- helpers -----------------
+
+// ----------------- streaming bubble (live tokens) -----------------
+
+function StreamingBubble({ text }: { text: string }) {
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] rounded-md border border-border bg-card px-4 py-3 text-sm">
+        <div className="mb-1 flex items-center gap-2 text-2xs uppercase tracking-wider text-muted-foreground">
+          <span>assistant</span>
+          <Loader2 className="h-3 w-3 animate-spin" />
+          <span>streaming…</span>
+        </div>
+        <div className="prose prose-sm prose-invert max-w-none [&_p]:my-1">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----------------- document filter chip (multi-select) -----------------
+
+function DocFilterChip({ docs, selected, onChange }: {
+  docs: DocumentRow[]; selected: string[];
+  onChange: (names: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const sel = new Set(selected);
+  return (
+    <div className="relative">
+      <button
+        className="h-7 rounded-sm border border-border bg-background px-2 text-2xs hover:bg-accent"
+        onClick={() => setOpen((o) => !o)}
+      >
+        scope: {selected.length || "all"} doc{selected.length === 1 ? "" : "s"}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-8 z-30 max-h-72 w-72 overflow-y-auto rounded-sm border border-border bg-card p-2 shadow-lg">
+          <div className="mb-2 flex justify-between text-2xs">
+            <button onClick={() => onChange([])}
+                    className="text-muted-foreground hover:text-foreground">clear all</button>
+            <button onClick={() => onChange(docs.map((d) => d.file_name))}
+                    className="text-muted-foreground hover:text-foreground">select all</button>
+          </div>
+          {docs.length === 0
+            ? <p className="px-1 py-2 text-2xs text-muted-foreground">No documents.</p>
+            : docs.map((d) => (
+              <label key={d.id} className="flex cursor-pointer items-center gap-2 rounded-sm px-1 py-1 text-xs hover:bg-accent">
+                <input
+                  type="checkbox"
+                  checked={sel.has(d.file_name)}
+                  onChange={(e) => {
+                    const next = new Set(sel);
+                    if (e.target.checked) next.add(d.file_name);
+                    else next.delete(d.file_name);
+                    onChange([...next]);
+                  }}
+                />
+                <span className="truncate">{d.file_name}</span>
+              </label>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ----------------- citation drawer (chunks + entities + communities) ---
+
+function CitationDrawer({ messageId, onClose }:
+                        { messageId: number; onClose: () => void }) {
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    api.expandMessage(messageId)
+      .then((r) => { if (alive) setData(r); })
+      .catch(console.error)
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [messageId]);
+  return (
+    <div className="fixed inset-0 z-40 flex items-stretch justify-end bg-black/30" onClick={onClose}>
+      <div className="flex h-full w-[480px] flex-col overflow-hidden border-l border-border bg-card shadow-xl"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-border px-4 py-2">
+          <div className="text-sm font-semibold">Citations</div>
+          <button onClick={onClose}
+                  className="rounded-sm p-1 text-muted-foreground hover:bg-accent">
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-3 text-xs">
+          {loading ? (
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" /> loading…
+            </div>
+          ) : !data ? (
+            <p className="text-muted-foreground">No data.</p>
+          ) : (
+            <>
+              {data.chunks?.length > 0 && (
+                <>
+                  <h3 className="mb-1 text-2xs uppercase tracking-wider text-muted-foreground">
+                    Chunks ({data.chunks.length})
+                  </h3>
+                  <ul className="space-y-2">
+                    {data.chunks.map((c: any) => (
+                      <li key={c.id} className="rounded-sm border border-border/60 bg-background/40 px-2 py-2">
+                        <div className="flex items-center gap-2 text-2xs text-muted-foreground">
+                          <span className="font-mono">{c.fileName}</span>
+                          {c.position != null && <span>pos {c.position}</span>}
+                          {c.score != null && <span>score {Number(c.score).toFixed(3)}</span>}
+                        </div>
+                        <div className="mt-1 whitespace-pre-wrap text-foreground/90">{c.text}</div>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {data.entities?.length > 0 && (
+                <>
+                  <h3 className="mb-1 mt-4 text-2xs uppercase tracking-wider text-muted-foreground">
+                    Entities ({data.entities.length})
+                  </h3>
+                  <ul className="space-y-2">
+                    {data.entities.map((e: any) => (
+                      <li key={e.element_id} className="rounded-sm border border-border/60 bg-background/40 px-2 py-1.5">
+                        <div className="font-mono">{e.id} <span className="text-muted-foreground">[{(e.labels || []).join(",")}]</span></div>
+                        {e.description && <div className="mt-0.5 text-muted-foreground">{e.description}</div>}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {data.communities?.length > 0 && (
+                <>
+                  <h3 className="mb-1 mt-4 text-2xs uppercase tracking-wider text-muted-foreground">
+                    Communities ({data.communities.length})
+                  </h3>
+                  <ul className="space-y-2">
+                    {data.communities.map((c: any) => (
+                      <li key={c.id} className="rounded-sm border border-border/60 bg-background/40 px-2 py-1.5">
+                        <div className="font-mono text-foreground">{c.title || c.id}
+                          {c.level != null && <span className="ml-1 text-muted-foreground">· L{c.level}</span>}
+                        </div>
+                        {c.summary && <div className="mt-0.5 text-muted-foreground">{c.summary}</div>}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----------------- SSE streaming client (no EventSource: POST + body) --
+
+async function streamChat(sessionId: string, args: {
+  question: string; mode: string; document_names: string[];
+  onToken: (t: string) => void;
+  onDone: (payload: ChatAskResponse) => void;
+  onError: (msg: string) => void;
+}): Promise<void> {
+  const r = await fetch(`/api/chat/sessions/${sessionId}/messages/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      question: args.question,
+      mode: args.mode,
+      document_names: args.document_names,
+    }),
+  });
+  if (!r.ok || !r.body) {
+    args.onError(`stream failed: ${r.status} ${r.statusText}`);
+    return;
+  }
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    // SSE frames separated by blank line
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let evt = "message"; let data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event: ")) evt = line.slice(7).trim();
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      try {
+        const parsed = data ? JSON.parse(data) : {};
+        if (evt === "token") args.onToken(parsed.t || "");
+        else if (evt === "done") args.onDone(parsed);
+        else if (evt === "error") args.onError(parsed.error || "stream error");
+      } catch (e) {
+        console.error("SSE parse", e, data);
+      }
+    }
+  }
+}
 
 function fmtRelative(iso: string | null): string {
   if (!iso) return "—";

@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     checkpoint_every_chunks: int = 5
     enable_post_processing: bool = True
     enable_similar_chunks: bool = True
+    enable_entity_embeddings: bool = True
+    enable_community_embeddings: bool = True
+    entity_embedding_batch: int = 64
     knn_min_score: float = 0.8
 
     # Flask

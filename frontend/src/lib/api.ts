@@ -361,8 +361,14 @@ export const api = {
 
   // chat
   chatHealth: () =>
-    jsonFetch<{ ok: boolean; messages: string[]; indexed_dim?: number; chunks?: number }>(
-      "/api/chat/health",
+    jsonFetch<{
+      ok: boolean; messages: string[]; indexed_dim?: number; chunks?: number;
+      modes?: Record<string, { available: boolean; missing_indexes: string[] }>;
+    }>("/api/chat/health"),
+  chatModes: () => jsonFetch<{ modes: string[] }>("/api/chat/modes"),
+  expandMessage: (mid: number) =>
+    jsonFetch<{ chunks: any[]; entities: any[]; communities: any[] }>(
+      `/api/chat/messages/${mid}/expand`,
     ),
   listChatSessions: (params: { archived?: boolean; limit?: number; offset?: number; search?: string } = {}) => {
     const q = new URLSearchParams();

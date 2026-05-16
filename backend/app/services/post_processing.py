@@ -46,6 +46,8 @@ class PostProcessingReport:
     dedup: dict | None = None
     orphans: dict | None = None
     communities: dict | None = None
+    entity_embeddings: dict | None = None
+    community_embeddings: dict | None = None
     errors: list[str] = field(default_factory=list)
     elapsed_seconds: float = 0.0
 
@@ -68,6 +70,8 @@ class PostProcessingService:
             orphans: bool = False,
             communities: bool = True,
             summaries: bool = True,
+            entity_embeddings: bool = True,
+            community_embeddings: bool = True,
             community_levels: int = 2,
             emit: Callable[[str, float, dict | None], None] | None = None,
             ) -> PostProcessingReport:
@@ -118,13 +122,111 @@ class PostProcessingService:
                     **(rep.communities or {}),
                     "summaries": self.summarize_communities(),
                 }
-                notify("post: community summaries done", 0.95, None)
+                notify("post: community summaries done", 0.90, None)
             except Exception as e:
                 log.exception("community summaries failed")
                 rep.errors.append(f"summaries: {e}")
 
+        if entity_embeddings:
+            try:
+                notify("post: entity embeddings starting", 0.92, None)
+                rep.entity_embeddings = self.embed_entities()
+                notify(f"post: entity embeddings done — {rep.entity_embeddings}", 0.96, None)
+            except Exception as e:
+                log.exception("entity embeddings failed")
+                rep.errors.append(f"entity_embeddings: {e}")
+
+        if community_embeddings:
+            try:
+                notify("post: community embeddings starting", 0.97, None)
+                rep.community_embeddings = self.embed_communities()
+                notify(f"post: community embeddings done — {rep.community_embeddings}", 0.99, None)
+            except Exception as e:
+                log.exception("community embeddings failed")
+                rep.errors.append(f"community_embeddings: {e}")
+
         rep.elapsed_seconds = round(time.time() - t0, 2)
         return rep
+
+    # ---------------- embeddings ----------------
+
+    def embed_entities(self) -> dict:
+        """Compute `__Entity__.embedding` for nodes that don't have one.
+
+        Text fed to embedder = `id + " — " + description` (mirrors
+        llm-graph-builder). Batch size from settings. Creates
+        `entity_vector` index after first batch lands so query-time can
+        immediately use it.
+        """
+        from ..config import get_settings
+        from ..llm import build_embedder
+
+        settings = get_settings()
+        embedder, dim = build_embedder(settings)
+        batch_n = max(8, int(settings.entity_embedding_batch))
+
+        pending = self.repo.list_entities_needing_embedding(limit=10_000)
+        if not pending:
+            self.repo.create_entity_vector_index(dim)
+            return {"embedded": 0, "skipped": "no entities pending"}
+        total = 0
+        for i in range(0, len(pending), batch_n):
+            chunk = pending[i:i + batch_n]
+            texts = [
+                ((row.get("id") or "") + " — " + (row.get("description") or ""))[:2000]
+                for row in chunk
+            ]
+            try:
+                vectors = embedder.embed_documents(texts)
+            except Exception as e:
+                log.warning("entity batch embed failed (%d-%d): %s", i, i + len(chunk), e)
+                continue
+            self.repo.write_entity_embeddings(
+                [{"eid": row["eid"], "embedding": vec}
+                 for row, vec in zip(chunk, vectors)]
+            )
+            total += len(chunk)
+        try:
+            self.repo.create_entity_vector_index(dim)
+        except Exception as e:
+            log.warning("entity_vector index create failed: %s", e)
+        return {"embedded": total, "dim": dim}
+
+    def embed_communities(self) -> dict:
+        """Same as `embed_entities` but for `__Community__.summary`."""
+        from ..config import get_settings
+        from ..llm import build_embedder
+
+        settings = get_settings()
+        embedder, dim = build_embedder(settings)
+        batch_n = max(8, int(settings.entity_embedding_batch))
+
+        pending = self.repo.list_communities_needing_embedding(limit=10_000)
+        if not pending:
+            self.repo.create_community_vector_index(dim)
+            return {"embedded": 0, "skipped": "no community summaries pending"}
+        total = 0
+        for i in range(0, len(pending), batch_n):
+            chunk = pending[i:i + batch_n]
+            texts = [
+                ((row.get("title") or "") + " — " + (row.get("summary") or ""))[:4000]
+                for row in chunk
+            ]
+            try:
+                vectors = embedder.embed_documents(texts)
+            except Exception as e:
+                log.warning("community batch embed failed (%d-%d): %s", i, i + len(chunk), e)
+                continue
+            self.repo.write_community_embeddings(
+                [{"eid": row["eid"], "embedding": vec}
+                 for row, vec in zip(chunk, vectors)]
+            )
+            total += len(chunk)
+        try:
+            self.repo.create_community_vector_index(dim)
+        except Exception as e:
+            log.warning("community_vector index create failed: %s", e)
+        return {"embedded": total, "dim": dim}
 
     # ---------------- dedup + orphans ----------------
 

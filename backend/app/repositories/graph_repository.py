@@ -294,6 +294,99 @@ class GraphRepository:
         return len(seen_node_ids), total_rel
 
     # ---------- post-processing ----------
+    def create_entity_vector_index(self, dimension: int) -> None:
+        """Vector index on __Entity__.embedding — needed for `entity_vector`
+        chat mode. Cosine similarity, same dimension as Chunk.embedding."""
+        try:
+            self._run("DROP INDEX entity_vector IF EXISTS")
+        except Exception:
+            pass
+        self._run(
+            f"""
+            CREATE VECTOR INDEX entity_vector IF NOT EXISTS
+            FOR (n:__Entity__) ON (n.embedding)
+            OPTIONS {{
+              indexConfig: {{
+                `vector.dimensions`: {int(dimension)},
+                `vector.similarity_function`: 'cosine'
+              }}
+            }}
+            """
+        )
+
+    def create_community_vector_index(self, dimension: int) -> None:
+        try:
+            self._run("DROP INDEX community_vector IF EXISTS")
+        except Exception:
+            pass
+        self._run(
+            f"""
+            CREATE VECTOR INDEX community_vector IF NOT EXISTS
+            FOR (n:__Community__) ON (n.embedding)
+            OPTIONS {{
+              indexConfig: {{
+                `vector.dimensions`: {int(dimension)},
+                `vector.similarity_function`: 'cosine'
+              }}
+            }}
+            """
+        )
+
+    def list_entities_needing_embedding(self, *, limit: int = 5000) -> list[dict]:
+        """__Entity__ nodes without an `embedding` property yet."""
+        rows = self._run(
+            """
+            MATCH (e:__Entity__)
+            WHERE e.embedding IS NULL
+            RETURN elementId(e) AS eid,
+                   coalesce(e.id, '') AS id,
+                   coalesce(e.description, '') AS description
+            LIMIT $limit
+            """,
+            limit=int(limit),
+        )
+        return [dict(r) for r in rows]
+
+    def list_communities_needing_embedding(self, *, limit: int = 5000) -> list[dict]:
+        """__Community__ nodes with a summary but no embedding yet."""
+        rows = self._run(
+            """
+            MATCH (c:__Community__)
+            WHERE c.embedding IS NULL AND c.summary IS NOT NULL AND c.summary <> ''
+            RETURN elementId(c) AS eid,
+                   coalesce(c.title, c.id, '') AS title,
+                   coalesce(c.summary, '') AS summary
+            LIMIT $limit
+            """,
+            limit=int(limit),
+        )
+        return [dict(r) for r in rows]
+
+    def write_entity_embeddings(self, rows: list[dict]) -> None:
+        """rows = [{eid, embedding}, ...]"""
+        if not rows:
+            return
+        self._run(
+            """
+            UNWIND $rows AS row
+            MATCH (e:__Entity__) WHERE elementId(e) = row.eid
+            CALL db.create.setNodeVectorProperty(e, 'embedding', row.embedding)
+            """,
+            rows=rows,
+        )
+
+    def write_community_embeddings(self, rows: list[dict]) -> None:
+        if not rows:
+            return
+        self._run(
+            """
+            UNWIND $rows AS row
+            MATCH (c:__Community__) WHERE elementId(c) = row.eid
+            CALL db.create.setNodeVectorProperty(c, 'embedding', row.embedding)
+            """,
+            rows=rows,
+        )
+
     def create_chat_indexes(self) -> None:
         """Indexes the chat/RAG retriever depends on.
 
