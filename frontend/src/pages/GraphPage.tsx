@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { GraphViewer } from "@/components/GraphViewer";
 import { api, AppConfig, DocumentRow, GraphExplore } from "@/lib/api";
+import { confirm } from "@/lib/confirm";
 
 export function GraphPage({ config }: { config: AppConfig | null }) {
   const [stats, setStats] = useState<Record<string, number> | null>(null);
@@ -69,7 +70,13 @@ export function GraphPage({ config }: { config: AppConfig | null }) {
             )}
             <Button variant="destructive" size="sm"
                     onClick={async () => {
-                      if (!confirm("Delete the entire graph? This wipes every node and relationship.")) return;
+                      const ok = await confirm({
+                        title: "Wipe the entire graph?",
+                        description: "Deletes every node and relationship in Neo4j. Document records in the app database are kept (status reset to pending).",
+                        confirmText: "Wipe graph",
+                        variant: "destructive",
+                      });
+                      if (!ok) return;
                       await api.clearGraph(); refresh(); loadExplore();
                     }}>
               <Trash2 className="h-3.5 w-3.5" /> Clear

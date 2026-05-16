@@ -47,8 +47,12 @@
     --input: 222 16% 18%;
     --ring: 222 16% 30%;
   }
+  html, body, #root {
+    height: 100%;
+  }
   body {
     @apply bg-background text-foreground antialiased;
+    overflow: hidden;          /* shell handles scrolling per-region */
     font-family: ui-sans-serif, system-ui, -apple-system, "Inter", "SF Pro Text",
       "Segoe UI", Roboto, sans-serif;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";

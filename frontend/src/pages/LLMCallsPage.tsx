@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { api, LLMCallDetail, LLMCallRow, LLMLogStats } from "@/lib/api";
+import { confirm } from "@/lib/confirm";
 
 const PAGE = 25;
 
@@ -127,7 +128,13 @@ export function LLMCallsPage() {
                 <RefreshCw className={busy ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
               </Button>
               <Button variant="destructive" size="sm" onClick={async () => {
-                if (!confirm("Delete all LLM call records?")) return;
+                const ok = await confirm({
+                  title: "Delete all LLM call records?",
+                  description: "Wipes the entire audit log. Cannot be undone.",
+                  confirmText: "Delete all",
+                  variant: "destructive",
+                });
+                if (!ok) return;
                 await api.llmClear();
                 setOffset(0);
                 refresh();

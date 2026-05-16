@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
 import { api, PromptRow } from "@/lib/api";
 import { useUnsavedGuard } from "@/lib/unsavedGuard";
+import { confirm } from "@/lib/confirm";
 
 export function PromptsPage() {
   const [items, setItems] = useState<PromptRow[]>([]);
@@ -91,7 +92,13 @@ export function PromptsPage() {
 
   const reset = async () => {
     if (!active) return;
-    if (!confirm("Reset this prompt to its on-disk default? Local edits will be lost.")) return;
+    const ok = await confirm({
+      title: "Reset prompt to default?",
+      description: "Discards your local edits and restores the on-disk template shipped with the app.",
+      confirmText: "Reset",
+      variant: "destructive",
+    });
+    if (!ok) return;
     setBusy(true); setError(null);
     try {
       const r = await api.resetPrompt(active.key);

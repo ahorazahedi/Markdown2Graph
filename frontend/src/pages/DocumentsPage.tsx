@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { DocumentStatusBadge } from "@/components/StatusBadge";
 import { cn } from "@/lib/utils";
 import { api, DocumentRow, DocumentStats, EntityGraph } from "@/lib/api";
+import { confirm } from "@/lib/confirm";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -79,7 +80,13 @@ export function DocumentsPage() {
   };
 
   const remove = async (id: number) => {
-    if (!confirm("Delete this document and its graph data?")) return;
+    const ok = await confirm({
+      title: "Delete document?",
+      description: "This removes the document, its chunks, and any orphan entities from the graph. The staged file on disk is also deleted.",
+      confirmText: "Delete",
+      variant: "destructive",
+    });
+    if (!ok) return;
     await api.deleteDocument(id);
     await refresh();
     setOpen(null);

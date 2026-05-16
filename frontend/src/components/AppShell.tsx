@@ -34,10 +34,13 @@ export function AppShell({ children, config, route, onRouteChange }: {
   route: Route;
   onRouteChange: (r: Route) => void;
 }) {
+  // Fixed sidebar + independently scrollable content. The shell takes the
+  // full viewport height; only <main> scrolls. Prevents the sidebar from
+  // disappearing on long pages (Documents, Graph, LLM Calls).
   return (
-    <div className="grid min-h-screen grid-cols-[220px_1fr] bg-background">
-      <aside className="flex flex-col border-r border-border bg-card/40">
-        <div className="flex h-12 items-center gap-2 border-b border-border px-4">
+    <div className="grid h-screen grid-cols-[220px_minmax(0,1fr)] overflow-hidden bg-background">
+      <aside className="flex h-screen flex-col overflow-hidden border-r border-border bg-card/40">
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
           <Activity className="h-4 w-4" />
           <span className="text-sm font-semibold tracking-tightish">text2graph</span>
           {config?.domain && (
@@ -46,33 +49,35 @@ export function AppShell({ children, config, route, onRouteChange }: {
             </span>
           )}
         </div>
-        <nav className="flex flex-1 flex-col gap-0.5 p-2">
-          {NAV.map((item) => {
-            const Icon = item.icon;
-            const active = item.key === route;
-            return (
-              <button
-                key={item.key}
-                onClick={() => guard.tryNavigate(() => onRouteChange(item.key))}
-                className={cn(
-                  "group flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors",
-                  active
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-                )}
-              >
-                <Icon className={cn("h-4 w-4", active ? "text-foreground" : "text-muted-foreground/80")} />
-                <span className="flex-1 text-left">{item.label}</span>
-              </button>
-            );
-          })}
+        <nav className="flex-1 overflow-y-auto px-2 py-2">
+          <div className="flex flex-col gap-0.5">
+            {NAV.map((item) => {
+              const Icon = item.icon;
+              const active = item.key === route;
+              return (
+                <button
+                  key={item.key}
+                  onClick={() => guard.tryNavigate(() => onRouteChange(item.key))}
+                  className={cn(
+                    "group flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors",
+                    active
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                  )}
+                >
+                  <Icon className={cn("h-4 w-4", active ? "text-foreground" : "text-muted-foreground/80")} />
+                  <span className="flex-1 text-left">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
         </nav>
-        <div className="border-t border-border px-4 py-3 text-2xs leading-relaxed text-muted-foreground">
+        <div className="shrink-0 border-t border-border px-4 py-3 text-2xs leading-relaxed text-muted-foreground">
           <div className="truncate"><span className="text-foreground">model</span> · {config?.llm.model ?? "—"}</div>
           <div className="truncate"><span className="text-foreground">embed</span> · {config?.embedding.model ?? "—"} ({config?.embedding.dimension})</div>
         </div>
       </aside>
-      <main className="min-w-0">
+      <main className="h-screen min-w-0 overflow-y-auto">
         <div className="mx-auto max-w-6xl px-8 py-8">
           {children}
         </div>

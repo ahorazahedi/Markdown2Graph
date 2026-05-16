@@ -1,5 +1,6 @@
 import { AppShell, useAppConfig, useHashRoute } from "@/components/AppShell";
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog";
+import { ConfirmHost } from "@/lib/confirm";
 import { SetupPage } from "@/pages/SetupPage";
 import { SchemaPage } from "@/pages/SchemaPage";
 import { DocumentsPage } from "@/pages/DocumentsPage";
@@ -24,6 +25,7 @@ export default function App() {
         {route === "llm-calls"  && <LLMCallsPage />}
       </AppShell>
       <UnsavedChangesDialog />
+      <ConfirmHost />
     </>
   );
 }
