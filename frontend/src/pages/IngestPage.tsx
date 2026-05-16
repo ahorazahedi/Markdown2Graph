@@ -1,31 +1,64 @@
 import { useEffect, useRef, useState } from "react";
-import { Play, RotateCcw } from "lucide-react";
+import { Play, RotateCcw, Save, Check, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/PageHeader";
 import { DocumentStatusBadge } from "@/components/StatusBadge";
-import { api, DocumentRow, JobSnapshot } from "@/lib/api";
+import { api, DocumentRow, JobSnapshot, Schema } from "@/lib/api";
+import { useUnsavedGuard } from "@/lib/unsavedGuard";
 
 export function IngestPage() {
   const [docs, setDocs] = useState<DocumentRow[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [reextract, setReextract] = useState(false);
+
+  // schema + per-run guidance
+  const [schema, setSchema] = useState<Schema | null>(null);
+  const [guidance, setGuidance] = useState("");
+  const [savingGuidance, setSavingGuidance] = useState(false);
+  const [guidanceSavedAt, setGuidanceSavedAt] = useState<number | null>(null);
+
   const [job, setJob] = useState<JobSnapshot | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const refresh = async () => {
-    const r = await api.listDocuments();
-    setDocs(r.items);
+    const [d, s] = await Promise.all([api.listDocuments(), api.getSchema()]);
+    setDocs(d.items);
+    setSchema(s);
+    setGuidance(s.extra || "");
   };
   useEffect(() => { refresh(); }, []);
+
+  const dirtyGuidance = !!(schema && guidance !== (schema.extra || ""));
+  useUnsavedGuard(dirtyGuidance);
+
+  const saveGuidance = async () => {
+    if (!schema) return;
+    setSavingGuidance(true);
+    try {
+      const saved = await api.saveSchema({
+        node_labels: schema.node_labels,
+        triplets: schema.triplets,
+        extra: guidance,
+        source: "manual",
+      });
+      setSchema(saved);
+      setGuidanceSavedAt(Date.now());
+    } finally {
+      setSavingGuidance(false);
+    }
+  };
 
   const start = async (mode: "selected" | "pending") => {
     setError(null);
     try {
+      // persist any unsaved guidance edits first so the run picks them up
+      if (dirtyGuidance) await saveGuidance();
       const body =
         mode === "selected"
           ? { document_ids: Array.from(selected), reextract }
@@ -65,6 +98,7 @@ export function IngestPage() {
   };
 
   const pendingCount = docs.filter((d) => d.status === "pending" || d.status === "failed").length;
+  const schemaReady = !!schema && schema.node_labels.length > 0;
 
   return (
     <>
@@ -73,10 +107,12 @@ export function IngestPage() {
         description="Run extraction over selected documents, or all pending. Re-extract wipes prior graph state for those documents and rebuilds it from scratch."
         actions={
           <>
-            <Button variant="outline" size="sm" onClick={() => start("pending")} disabled={pendingCount === 0}>
+            <Button variant="outline" size="sm" onClick={() => start("pending")}
+                    disabled={!schemaReady || pendingCount === 0}>
               <Play className="h-3.5 w-3.5" /> Run pending ({pendingCount})
             </Button>
-            <Button size="sm" onClick={() => start("selected")} disabled={selected.size === 0}>
+            <Button size="sm" onClick={() => start("selected")}
+                    disabled={!schemaReady || selected.size === 0}>
               {reextract ? <RotateCcw className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
               {reextract ? "Re-extract" : "Run"} selected ({selected.size})
             </Button>
@@ -84,13 +120,58 @@ export function IngestPage() {
         }
       />
 
+      {!schemaReady && (
+        <div className="mb-4 rounded-sm border border-[hsl(var(--warning))]/40 bg-[hsl(var(--warning))]/10 px-3 py-2 text-sm text-[hsl(var(--warning))]">
+          No schema configured yet. Visit <span className="font-medium">Schema</span> to define node labels and relationships before running ingest.
+        </div>
+      )}
+
+      {/* extraction guidance — moved here from Schema */}
       <Card className="mb-4">
-        <CardContent className="flex items-center gap-4">
+        <CardHeader className="flex-row items-start justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Wand2 className="h-4 w-4" /> Extraction guidance
+            </CardTitle>
+            <CardDescription>
+              Free-text instructions appended to the extraction prompt on every chunk. Saved with the schema; applies to subsequent runs.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            {guidanceSavedAt && Date.now() - guidanceSavedAt < 4000 && (
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Check className="h-3 w-3" /> saved
+              </span>
+            )}
+            <Button size="sm" variant="outline" onClick={saveGuidance}
+                    disabled={!dirtyGuidance || savingGuidance}>
+              <Save className="h-3.5 w-3.5" /> {savingGuidance ? "Saving…" : "Save guidance"}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <Textarea
+            rows={8}
+            className="font-mono text-xs leading-relaxed"
+            spellCheck={false}
+            placeholder={`Examples:
+- Capture dosing (mg, route, frequency) as properties on Drug-TREATS->Disease edges.
+- For pediatric content, set patient_age_group on Patient nodes.
+- Prefer SNOMED ids when explicitly mentioned; otherwise use the canonical English name.`}
+            value={guidance}
+            onChange={(e) => setGuidance(e.target.value)}
+          />
+        </CardContent>
+      </Card>
+
+      {/* run options */}
+      <Card className="mb-4">
+        <CardContent className="flex flex-wrap items-center gap-4">
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={reextract} onChange={(e) => setReextract(e.target.checked)} />
-            Re-extract (wipe previous graph state for selected docs)
+            Re-extract — wipe previous graph state for selected docs
           </label>
-          <span className="ml-auto text-xs text-muted-foreground">
+          <span className="ml-auto text-xs text-muted-foreground tabular-nums">
             {selected.size} / {docs.length} selected
           </span>
         </CardContent>
