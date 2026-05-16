@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, Trash2, X, Eye, ChevronLeft, ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  RefreshCw, Trash2, ChevronLeft, ChevronRight, Clock, CheckCircle2,
+  XCircle, Loader2, Zap, Hash,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { api, LLMCallDetail, LLMCallRow, LLMLogStats } from "@/lib/api";
 import { confirm } from "@/lib/confirm";
+import { cn } from "@/lib/utils";
 
-const PAGE = 25;
+const PAGE = 30;
 
 export function LLMCallsPage() {
   const [rows, setRows] = useState<LLMCallRow[]>([]);
@@ -18,7 +21,11 @@ export function LLMCallsPage() {
   const [stats, setStats] = useState<LLMLogStats | null>(null);
   const [busy, setBusy] = useState(false);
   const [auto, setAuto] = useState(true);
-  const [selected, setSelected] = useState<LLMCallDetail | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [detail, setDetail] = useState<LLMCallDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const detailAbort = useRef<AbortController | null>(null);
 
   const refresh = async () => {
     setBusy(true);
@@ -32,306 +39,377 @@ export function LLMCallsPage() {
       setTotal(list.total);
       setTags(t.tags);
       setStats(s);
+      // auto-select first if none picked yet
+      if (selectedId == null && list.items.length > 0) {
+        setSelectedId(list.items[0].id);
+      }
     } finally {
       setBusy(false);
     }
   };
 
-  useEffect(() => {
-    refresh();
-  }, [tag, status, offset]);
-
+  useEffect(() => { refresh(); /* on filter / page */ }, [tag, status, offset]);
   useEffect(() => {
     if (!auto) return;
     const id = window.setInterval(refresh, 3000);
     return () => window.clearInterval(id);
   }, [auto, tag, status, offset]);
 
-  const open = async (id: number) => {
-    setSelected(null);
-    const d = await api.llmCall(id);
-    setSelected(d);
-  };
+  // load detail when selection changes
+  useEffect(() => {
+    if (selectedId == null) { setDetail(null); return; }
+    detailAbort.current?.abort();
+    const ac = new AbortController();
+    detailAbort.current = ac;
+    setDetailLoading(true);
+    api.llmCall(selectedId)
+      .then((d) => { if (!ac.signal.aborted) setDetail(d); })
+      .catch(() => {})
+      .finally(() => { if (!ac.signal.aborted) setDetailLoading(false); });
+    return () => ac.abort();
+  }, [selectedId]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE));
   const page = Math.floor(offset / PAGE) + 1;
 
   return (
-    <div className="space-y-4">
-      <div className="mb-2">
-        <h1 className="text-xl font-semibold tracking-tightish">LLM Calls</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Every prompt sent to the LLM and the response received, tagged by purpose.</p>
-      </div>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
-        {[
-          ["Total", stats?.total],
-          ["OK", stats?.ok],
-          ["Errors", stats?.err],
-          ["Pending", stats?.pending],
-          ["Tokens", stats?.tokens],
-          ["Avg ms", stats ? Math.round(stats.avg_latency_ms) : null],
-        ].map(([label, v]) => (
-          <Card key={label as string} className="border-border/60">
-            <CardHeader className="pb-2">
-              <CardDescription>{label as string}</CardDescription>
-              <CardTitle className="text-2xl tabular-nums">{v ?? "—"}</CardTitle>
-            </CardHeader>
-          </Card>
-        ))}
-      </div>
+    <div className="flex h-full flex-col">
+      {/* ============ TOP BAR ============ */}
+      <header className="shrink-0 border-b border-border bg-card/30">
+        <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3 px-6 py-4">
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold tracking-tightish">LLM Calls</h1>
+            <p className="text-xs text-muted-foreground">
+              Every prompt sent to the LLM and the response received, tagged by purpose.
+            </p>
+          </div>
+          <div className="flex items-center gap-5 text-sm">
+            <Stat label="Total"    value={stats?.total} />
+            <Stat label="Success"  value={stats?.ok} accent="success" />
+            <Stat label="Errors"   value={stats?.err} accent={stats?.err ? "destructive" : undefined} />
+            <Stat label="Pending"  value={stats?.pending} />
+            <Stat label="Tokens"   value={stats?.tokens} muted />
+            <Stat label="Avg ms"   value={stats ? Math.round(stats.avg_latency_ms) : null} muted />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 border-t border-border px-6 py-2">
+          <FilterChip
+            value={tag}
+            options={[{ value: "", label: "All tags" }, ...tags.map((t) => ({ value: t, label: t }))]}
+            onChange={(v) => { setOffset(0); setTag(v); }}
+          />
+          <FilterChip
+            value={status}
+            options={[
+              { value: "", label: "All status" },
+              { value: "success", label: "success" },
+              { value: "pending", label: "pending" },
+              { value: "error",   label: "error" },
+            ]}
+            onChange={(v) => { setOffset(0); setStatus(v); }}
+          />
+          <label className="ml-2 flex select-none items-center gap-1.5 text-2xs text-muted-foreground">
+            <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)}
+                   className="h-3 w-3 accent-foreground" />
+            auto-refresh
+          </label>
+          <div className="ml-auto flex items-center gap-1">
+            <Button size="sm" variant="ghost" onClick={refresh} disabled={busy}>
+              <RefreshCw className={busy ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+            </Button>
+            <Button size="sm" variant="ghost" onClick={async () => {
+              const ok = await confirm({
+                title: "Delete all LLM call records?",
+                description: "Wipes the entire audit log. Cannot be undone.",
+                confirmText: "Delete all",
+                variant: "destructive",
+              });
+              if (!ok) return;
+              await api.llmClear();
+              setSelectedId(null);
+              setOffset(0);
+              refresh();
+            }}>
+              <Trash2 className="h-3.5 w-3.5 text-destructive" />
+            </Button>
+          </div>
+        </div>
+      </header>
 
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <CardTitle>LLM call log</CardTitle>
-              <CardDescription>
-                Every prompt sent to the LLM and the response it returned, tagged by purpose.
-              </CardDescription>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                value={tag}
-                onChange={(e) => {
-                  setOffset(0);
-                  setTag(e.target.value);
-                }}
-              >
-                <option value="">All tags</option>
-                {tags.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-              <select
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                value={status}
-                onChange={(e) => {
-                  setOffset(0);
-                  setStatus(e.target.value);
-                }}
-              >
-                <option value="">All status</option>
-                <option value="success">success</option>
-                <option value="pending">pending</option>
-                <option value="error">error</option>
-              </select>
-              <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={auto}
-                  onChange={(e) => setAuto(e.target.checked)}
+      {/* ============ BODY: list + detail ============ */}
+      <div className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)]">
+        {/* ---------- list column ---------- */}
+        <aside className="flex min-h-0 flex-col border-r border-border">
+          <div className="flex-1 overflow-y-auto">
+            {rows.length === 0
+              ? <EmptyList />
+              : rows.map((r) => (
+                <CallRow
+                  key={r.id}
+                  row={r}
+                  active={r.id === selectedId}
+                  onSelect={() => setSelectedId(r.id)}
                 />
-                auto-refresh
-              </label>
-              <Button variant="outline" size="sm" onClick={refresh} disabled={busy}>
-                <RefreshCw className={busy ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-              </Button>
-              <Button variant="destructive" size="sm" onClick={async () => {
-                const ok = await confirm({
-                  title: "Delete all LLM call records?",
-                  description: "Wipes the entire audit log. Cannot be undone.",
-                  confirmText: "Delete all",
-                  variant: "destructive",
-                });
-                if (!ok) return;
-                await api.llmClear();
-                setOffset(0);
-                refresh();
-              }}>
-                <Trash2 className="h-4 w-4" /> Clear
-              </Button>
-            </div>
+              ))}
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-auto rounded-md border border-border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/40 text-left">
-                <tr>
-                  <th className="px-3 py-2">#</th>
-                  <th className="px-3 py-2">When</th>
-                  <th className="px-3 py-2">Tag</th>
-                  <th className="px-3 py-2">Model</th>
-                  <th className="px-3 py-2">Status</th>
-                  <th className="px-3 py-2 text-right">ms</th>
-                  <th className="px-3 py-2 text-right">prompt</th>
-                  <th className="px-3 py-2 text-right">compl.</th>
-                  <th className="px-3 py-2 text-right">total</th>
-                  <th className="px-3 py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className="border-t border-border hover:bg-muted/20">
-                    <td className="px-3 py-1.5 font-mono text-xs">{r.id}</td>
-                    <td className="px-3 py-1.5 text-xs text-muted-foreground">
-                      {fmtTime(r.created_at)}
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <Badge variant="secondary">{r.tag}</Badge>
-                    </td>
-                    <td className="px-3 py-1.5 font-mono text-xs">{r.model || "—"}</td>
-                    <td className="px-3 py-1.5">
-                      <StatusBadge status={r.status} />
-                    </td>
-                    <td className="px-3 py-1.5 text-right tabular-nums">{r.latency_ms ?? "—"}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums">{r.prompt_tokens ?? "—"}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums">{r.completion_tokens ?? "—"}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums font-medium">
-                      {r.total_tokens ?? "—"}
-                    </td>
-                    <td className="px-3 py-1.5 text-right">
-                      <Button size="sm" variant="ghost" onClick={() => open(r.id)}>
-                        <Eye className="h-4 w-4" />
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-                {rows.length === 0 && (
-                  <tr>
-                    <td colSpan={10} className="px-3 py-6 text-center text-sm text-muted-foreground">
-                      No calls yet. Start a schema discovery or an ingest run.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-            <div>
-              {total} total · page {page} / {totalPages}
-            </div>
+          <div className="flex shrink-0 items-center justify-between border-t border-border px-3 py-2 text-2xs text-muted-foreground">
+            <span>{total} total · page {page} / {totalPages}</span>
             <div className="flex gap-1">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setOffset(Math.max(0, offset - PAGE))}
-                disabled={offset === 0}
-              >
-                <ChevronLeft className="h-4 w-4" /> Prev
+              <Button size="sm" variant="ghost" disabled={offset === 0}
+                      onClick={() => setOffset(Math.max(0, offset - PAGE))}>
+                <ChevronLeft className="h-3.5 w-3.5" />
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setOffset(offset + PAGE)}
-                disabled={offset + PAGE >= total}
-              >
-                Next <ChevronRight className="h-4 w-4" />
+              <Button size="sm" variant="ghost" disabled={offset + PAGE >= total}
+                      onClick={() => setOffset(offset + PAGE)}>
+                <ChevronRight className="h-3.5 w-3.5" />
               </Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
+        </aside>
 
-      {selected && <CallDetailDrawer call={selected} onClose={() => setSelected(null)} />}
+        {/* ---------- detail column ---------- */}
+        <section className="flex min-h-0 flex-col">
+          {selectedId == null
+            ? <EmptyDetail />
+            : <CallDetail call={detail} loading={detailLoading} />}
+        </section>
+      </div>
     </div>
+  );
+}
+
+/* ============================================================ */
+/* small components                                              */
+/* ============================================================ */
+
+function Stat({
+  label, value, accent, muted,
+}: {
+  label: string;
+  value?: number | null;
+  accent?: "success" | "destructive";
+  muted?: boolean;
+}) {
+  const color =
+    accent === "destructive" && value ? "text-destructive"
+    : accent === "success"     && value ? "text-[hsl(var(--success))]"
+    : "text-foreground";
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-2xs uppercase tracking-wider text-muted-foreground">{label}</span>
+      <span className={cn("font-semibold tabular-nums tracking-tightish", color, muted && "font-normal text-muted-foreground")}>
+        {value ?? "—"}
+      </span>
+    </div>
+  );
+}
+
+function FilterChip({
+  value, options, onChange,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-7 rounded-sm border border-border bg-background px-2 text-2xs text-foreground"
+    >
+      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  );
+}
+
+function EmptyList() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
+      <Hash className="h-5 w-5" />
+      <p>No calls match the current filters.</p>
+    </div>
+  );
+}
+
+function EmptyDetail() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+      <Zap className="h-6 w-6 text-muted-foreground" />
+      <div className="text-sm text-muted-foreground">Select a call to view request and response.</div>
+    </div>
+  );
+}
+
+function CallRow({
+  row, active, onSelect,
+}: {
+  row: LLMCallRow; active: boolean; onSelect: () => void;
+}) {
+  const StatusIcon = row.status === "success" ? CheckCircle2
+                   : row.status === "error"   ? XCircle
+                   : Loader2;
+  const statusColor = row.status === "success" ? "text-[hsl(var(--success))]"
+                   : row.status === "error"   ? "text-destructive"
+                   : "text-muted-foreground animate-spin";
+  return (
+    <button
+      onClick={onSelect}
+      className={cn(
+        "flex w-full items-start gap-3 border-b border-border px-3 py-2.5 text-left transition-colors",
+        active ? "bg-accent" : "hover:bg-accent/50",
+      )}
+    >
+      <StatusIcon className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", statusColor)} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <Badge variant="outline" className="font-mono text-2xs">{row.tag}</Badge>
+          <span className="text-2xs text-muted-foreground tabular-nums">#{row.id}</span>
+        </div>
+        <div className="mt-1 truncate text-2xs text-muted-foreground">
+          {fmtRelative(row.created_at)}
+        </div>
+        <div className="mt-1 flex items-center justify-between gap-3 text-2xs">
+          <span className="flex items-center gap-1 text-muted-foreground tabular-nums">
+            <Clock className="h-3 w-3" />{row.latency_ms ?? "—"}ms
+          </span>
+          <span className="text-muted-foreground tabular-nums">
+            {row.total_tokens ?? "—"} tok
+          </span>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function CallDetail({ call, loading }: { call: LLMCallDetail | null; loading: boolean }) {
+  if (loading && !call) {
+    return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading…</div>;
+  }
+  if (!call) return null;
+
+  const messages = (call.request_json && Array.isArray(call.request_json.messages))
+    ? call.request_json.messages.flat?.() ?? call.request_json.messages
+    : null;
+  const prompts = call.request_json?.prompts;
+  const responseText = call.response_text
+    || (call.response_json ? JSON.stringify(call.response_json, null, 2) : "");
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {/* meta strip */}
+      <div className="shrink-0 border-b border-border bg-card/30 px-6 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-sm font-semibold">#{call.id}</span>
+            <Badge variant="outline" className="font-mono text-2xs">{call.tag}</Badge>
+            <StatusBadge status={call.status} />
+          </div>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-2xs">
+            <Meta k="Model"      v={<span className="font-mono">{call.model}</span>} />
+            <Meta k="Provider"   v={call.provider} />
+            <Meta k="Latency"    v={call.latency_ms != null ? `${call.latency_ms} ms` : "—"} />
+            <Meta k="Tokens"     v={`${call.prompt_tokens ?? "—"} / ${call.completion_tokens ?? "—"} / ${call.total_tokens ?? "—"}`} />
+            <Meta k="Created"    v={fmtTime(call.created_at)} />
+          </div>
+        </div>
+      </div>
+
+      {call.error && (
+        <div className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-6 py-2">
+          <pre className="whitespace-pre-wrap text-xs text-destructive">{call.error}</pre>
+        </div>
+      )}
+
+      {/* split body: request / response */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-2">
+        {/* request */}
+        <section className="flex min-h-0 flex-col border-b border-border xl:border-b-0 xl:border-r">
+          <SectionHeader title="Request" sub={messages ? `${messages.length} message${messages.length === 1 ? "" : "s"}` : "raw"} />
+          <div className="flex-1 overflow-y-auto px-6 pb-6">
+            {messages
+              ? <MessagesView messages={messages} />
+              : prompts
+                ? prompts.map((p: string, i: number) => (
+                    <Block key={i} label={`prompt ${i + 1}`} body={p} />
+                  ))
+                : <Block label="request" body={JSON.stringify(call.request_json, null, 2)} />}
+          </div>
+        </section>
+
+        {/* response */}
+        <section className="flex min-h-0 flex-col">
+          <SectionHeader title="Response" sub={call.response_text ? `${call.response_text.length} chars` : "json"} />
+          <div className="flex-1 overflow-y-auto px-6 pb-6">
+            {responseText
+              ? <Block label="completion" body={responseText} />
+              : <p className="pt-4 text-sm text-muted-foreground">No response captured.</p>}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({ title, sub }: { title: string; sub?: string }) {
+  return (
+    <div className="sticky top-0 z-10 flex shrink-0 items-baseline justify-between border-b border-border bg-background/95 px-6 py-2 backdrop-blur">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-foreground">{title}</h3>
+      {sub && <span className="text-2xs text-muted-foreground">{sub}</span>}
+    </div>
+  );
+}
+
+function MessagesView({ messages }: { messages: any[] }) {
+  return (
+    <div className="space-y-3 pt-4">
+      {messages.map((m, i) => (
+        <Block
+          key={i}
+          label={m.type || m.role || "message"}
+          body={typeof m.content === "string" ? m.content : JSON.stringify(m.content, null, 2)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function Block({ label, body }: { label: string; body: string }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-2xs uppercase tracking-wider text-muted-foreground">{label}</div>
+      <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-sm border border-border bg-muted/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground">
+        {body}
+      </pre>
+    </div>
+  );
+}
+
+function Meta({ k, v }: { k: string; v: React.ReactNode }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="uppercase tracking-wider text-muted-foreground">{k}</span>
+      <span className="text-foreground">{v ?? "—"}</span>
+    </span>
   );
 }
 
 function StatusBadge({ status }: { status: string }) {
-  if (status === "success") return <Badge>success</Badge>;
-  if (status === "error") return <Badge variant="destructive">error</Badge>;
-  return <Badge variant="secondary">{status}</Badge>;
+  if (status === "success") return <Badge variant="success">success</Badge>;
+  if (status === "error")   return <Badge variant="destructive">error</Badge>;
+  return <Badge variant="warning">{status}</Badge>;
 }
 
 function fmtTime(iso: string) {
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
+function fmtRelative(iso: string): string {
   try {
     const d = new Date(iso);
+    const diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < 60)    return `${Math.round(diff)}s ago`;
+    if (diff < 3600)  return `${Math.round(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
     return d.toLocaleString();
-  } catch {
-    return iso;
-  }
-}
-
-function CallDetailDrawer({ call, onClose }: { call: LLMCallDetail; onClose: () => void }) {
-  const requestPretty = useMemo(
-    () => JSON.stringify(call.request_json, null, 2),
-    [call.request_json],
-  );
-  const responsePretty = useMemo(
-    () =>
-      call.response_text
-        ? call.response_text
-        : JSON.stringify(call.response_json, null, 2),
-    [call.response_text, call.response_json],
-  );
-
-  return (
-    <div className="fixed inset-0 z-50 flex">
-      <div className="flex-1 bg-black/40" onClick={onClose} />
-      <div className="flex h-full w-full max-w-3xl flex-col border-l border-border bg-background shadow-xl">
-        <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-sm text-muted-foreground">#{call.id}</span>
-            <Badge variant="secondary">{call.tag}</Badge>
-            <StatusBadge status={call.status} />
-            {call.latency_ms != null && (
-              <span className="text-xs text-muted-foreground">{call.latency_ms} ms</span>
-            )}
-            {call.total_tokens != null && (
-              <span className="text-xs text-muted-foreground">{call.total_tokens} tokens</span>
-            )}
-          </div>
-          <Button variant="ghost" size="icon" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-
-        <div className="flex-1 space-y-4 overflow-auto p-4">
-          <Section title="Meta">
-            <dl className="grid grid-cols-3 gap-x-4 gap-y-1 text-sm">
-              <Meta k="Model" v={call.model} />
-              <Meta k="Provider" v={call.provider} />
-              <Meta k="Base URL" v={call.base_url} />
-              <Meta k="Created" v={fmtTime(call.created_at)} />
-              <Meta k="Finished" v={call.finished_at ? fmtTime(call.finished_at) : "—"} />
-              <Meta k="Tokens" v={`${call.prompt_tokens ?? "—"} / ${call.completion_tokens ?? "—"} / ${call.total_tokens ?? "—"}`} />
-            </dl>
-          </Section>
-
-          {call.error && (
-            <Section title="Error">
-              <pre className="overflow-auto rounded bg-destructive/10 p-2 text-xs text-destructive">
-                {call.error}
-              </pre>
-            </Section>
-          )}
-
-          <Section title="Request">
-            <pre className="max-h-[40vh] overflow-auto rounded bg-muted/40 p-3 font-mono text-xs">
-              {requestPretty}
-            </pre>
-          </Section>
-
-          <Section title="Response">
-            <pre className="max-h-[40vh] overflow-auto rounded bg-muted/40 p-3 font-mono text-xs">
-              {responsePretty || "—"}
-            </pre>
-          </Section>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-2">
-      <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Meta({ k, v }: { k: string; v: any }) {
-  return (
-    <>
-      <dt className="text-muted-foreground">{k}</dt>
-      <dd className="col-span-2 break-all">{v ?? "—"}</dd>
-    </>
-  );
+  } catch { return iso; }
 }

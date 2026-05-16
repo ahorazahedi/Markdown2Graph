@@ -77,10 +77,8 @@ export function AppShell({ children, config, route, onRouteChange }: {
           <div className="truncate"><span className="text-foreground">embed</span> · {config?.embedding.model ?? "—"} ({config?.embedding.dimension})</div>
         </div>
       </aside>
-      <main className="h-screen min-w-0 overflow-y-auto">
-        <div className="mx-auto max-w-6xl px-8 py-8">
-          {children}
-        </div>
+      <main className="h-screen min-w-0 overflow-hidden">
+        {children}
       </main>
     </div>
   );
