@@ -77,6 +77,38 @@ CREATE TABLE IF NOT EXISTS prompts (
     default_hash    TEXT,                        -- sha1 of original disk template
     updated_at      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ingest_runs (
+    id              TEXT PRIMARY KEY,
+    kind            TEXT NOT NULL DEFAULT 'ingest',
+    status          TEXT NOT NULL DEFAULT 'queued',  -- queued|running|succeeded|failed
+    progress        REAL NOT NULL DEFAULT 0,
+    stage           TEXT NOT NULL DEFAULT '',
+    message         TEXT NOT NULL DEFAULT '',
+    error           TEXT,
+    scope_json      TEXT NOT NULL DEFAULT '{}',      -- inputs (doc_ids, reextract, ...)
+    result_json     TEXT,                            -- final totals
+    started_at      TEXT,
+    ended_at        TEXT,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_runs_status     ON ingest_runs(status);
+CREATE INDEX IF NOT EXISTS idx_ingest_runs_created_at ON ingest_runs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ingest_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL,
+    ts              TEXT NOT NULL,
+    stage           TEXT NOT NULL DEFAULT '',
+    message         TEXT NOT NULL DEFAULT '',
+    progress        REAL NOT NULL DEFAULT 0,
+    file_name       TEXT,
+    level           TEXT NOT NULL DEFAULT 'info',    -- info|warn|error
+    extra_json      TEXT,
+    FOREIGN KEY (run_id) REFERENCES ingest_runs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_events_run_id  ON ingest_events(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_ingest_events_level   ON ingest_events(level);
 """
 
 
@@ -359,6 +391,112 @@ class AppStateRepository:
             if (cur.rowcount or 0) == 0:
                 return None
         return self.get_prompt(key)
+
+    # ---------------- ingest jobs ----------------
+    def create_run(self, run_id: str, *, kind: str = "ingest", scope: dict | None = None) -> None:
+        with self._connect() as c:
+            c.execute(
+                "INSERT INTO ingest_runs (id, kind, status, scope_json, created_at) "
+                "VALUES (?, ?, 'queued', ?, ?)",
+                (run_id, kind, json.dumps(scope or {}, ensure_ascii=False, default=str), _now()),
+            )
+
+    def start_run(self, run_id: str) -> None:
+        with self._connect() as c:
+            c.execute(
+                "UPDATE ingest_runs SET status='running', started_at=? WHERE id=?",
+                (_now(), run_id),
+            )
+
+    def update_run_progress(self, run_id: str, *, stage: str, message: str, progress: float) -> None:
+        with self._connect() as c:
+            c.execute(
+                "UPDATE ingest_runs SET stage=?, message=?, "
+                "progress=MAX(progress, ?) WHERE id=?",
+                (stage, message, progress, run_id),
+            )
+
+    def finish_run(self, run_id: str, *, status: str, error: str | None = None,
+                   result: dict | None = None) -> None:
+        with self._connect() as c:
+            c.execute(
+                "UPDATE ingest_runs SET status=?, error=?, result_json=?, ended_at=?, "
+                "progress=CASE WHEN ?='succeeded' THEN 1.0 ELSE progress END WHERE id=?",
+                (status, error,
+                 json.dumps(result, ensure_ascii=False, default=str) if result else None,
+                 _now(), status, run_id),
+            )
+
+    def append_event(self, run_id: str, *, stage: str, message: str, progress: float,
+                     file_name: str | None = None, level: str = "info",
+                     extra: dict | None = None) -> int:
+        with self._connect() as c:
+            cur = c.execute(
+                "INSERT INTO ingest_events (run_id, ts, stage, message, progress, "
+                "file_name, level, extra_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, _now(), stage, message, progress, file_name, level,
+                 json.dumps(extra, ensure_ascii=False, default=str) if extra else None),
+            )
+            return int(cur.lastrowid)
+
+    def list_runs(self, *, status: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
+        sql = (
+            "SELECT id, kind, status, progress, stage, message, error, scope_json, "
+            "result_json, started_at, ended_at, created_at FROM ingest_runs"
+        )
+        params: list = []
+        if status:
+            sql += " WHERE status=?"
+            params.append(status)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        with self._connect() as c:
+            rows = [dict(r) for r in c.execute(sql, params).fetchall()]
+        for r in rows:
+            r["scope"] = json.loads(r.pop("scope_json") or "{}")
+            r["result"] = json.loads(r.pop("result_json") or "null")
+        return rows
+
+    def get_run(self, run_id: str) -> dict | None:
+        with self._connect() as c:
+            row = c.execute("SELECT * FROM ingest_runs WHERE id=?", (run_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["scope"] = json.loads(d.pop("scope_json") or "{}")
+        d["result"] = json.loads(d.pop("result_json") or "null")
+        return d
+
+    def list_events(self, run_id: str, *, after_id: int = 0, limit: int = 500,
+                    level: str | None = None) -> list[dict]:
+        sql = "SELECT id, ts, stage, message, progress, file_name, level, extra_json " \
+              "FROM ingest_events WHERE run_id=? AND id>?"
+        params: list = [run_id, after_id]
+        if level:
+            sql += " AND level=?"
+            params.append(level)
+        sql += " ORDER BY id ASC LIMIT ?"
+        params.append(limit)
+        with self._connect() as c:
+            rows = [dict(r) for r in c.execute(sql, params).fetchall()]
+        for r in rows:
+            r["extra"] = json.loads(r.pop("extra_json") or "null")
+        return rows
+
+    def runs_overview(self) -> dict:
+        with self._connect() as c:
+            row = c.execute(
+                """
+                SELECT
+                  COUNT(*)                                                AS total,
+                  SUM(CASE WHEN status='running'   THEN 1 ELSE 0 END)     AS running,
+                  SUM(CASE WHEN status='queued'    THEN 1 ELSE 0 END)     AS queued,
+                  SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END)     AS succeeded,
+                  SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END)     AS failed
+                FROM ingest_runs
+                """
+            ).fetchone()
+        return {k: row[k] for k in row.keys()}
 
     def stats(self) -> dict:
         with self._connect() as c:

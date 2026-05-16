@@ -8,6 +8,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/PageHeader";
+import { PageContainer } from "@/components/PageContainer";
 import { DocumentStatusBadge } from "@/components/StatusBadge";
 import { cn } from "@/lib/utils";
 import { api, DocumentRow, DocumentStats, EntityGraph } from "@/lib/api";
@@ -98,18 +99,20 @@ export function DocumentsPage() {
   };
 
   return (
-    <>
-      <PageHeader
-        title="Documents"
-        description="Upload, inspect, re-extract. State is persistent."
-        actions={
-          <Button variant="outline" size="sm" onClick={refresh} disabled={busy}>
-            <RefreshCw className={busy ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
-            Refresh
-          </Button>
-        }
-      />
-
+    <PageContainer
+      header={
+        <PageHeader
+          title="Documents"
+          description="Upload, inspect, re-extract. State is persistent."
+          actions={
+            <Button variant="outline" size="sm" onClick={refresh} disabled={busy}>
+              <RefreshCw className={busy ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+              Refresh
+            </Button>
+          }
+        />
+      }
+    >
       {/* stats */}
       <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-6">
         <StatTile label="Total"        value={stats?.total} />
@@ -214,7 +217,7 @@ export function DocumentsPage() {
       </Card>
 
       <DocumentDrawer doc={open} onClose={() => setOpen(null)} onDeleted={refresh} />
-    </>
+    </PageContainer>
   );
 }
 

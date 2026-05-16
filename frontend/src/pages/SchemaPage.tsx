@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
+import { PageContainer } from "@/components/PageContainer";
 import { api, Schema, SchemaVersion, Triplet } from "@/lib/api";
 import { useUnsavedGuard } from "@/lib/unsavedGuard";
 
@@ -124,27 +125,29 @@ export function SchemaPage() {
   }, [triplets]);
 
   return (
-    <>
-      <PageHeader
-        title="Schema"
-        description="Allowed node labels and relationship types. Persisted in the app database; applied on every ingest run."
-        actions={
-          <>
-            {savedAt && Date.now() - savedAt < 4000 && (
-              <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                <Check className="h-3 w-3" /> saved
-              </span>
-            )}
-            <Button variant="outline" size="sm" onClick={() => setDiscoverOpen((v) => !v)}>
-              <Sparkles className="h-3.5 w-3.5" /> Discover with AI
-            </Button>
-            <Button size="sm" onClick={save} disabled={!dirty || saving}>
-              <Save className="h-3.5 w-3.5" /> {saving ? "Saving…" : "Save"}
-            </Button>
-          </>
-        }
-      />
-
+    <PageContainer
+      header={
+        <PageHeader
+          title="Schema"
+          description="Allowed node labels and relationship types. Persisted in the app database; applied on every ingest run."
+          actions={
+            <>
+              {savedAt && Date.now() - savedAt < 4000 && (
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Check className="h-3 w-3" /> saved
+                </span>
+              )}
+              <Button variant="outline" size="sm" onClick={() => setDiscoverOpen((v) => !v)}>
+                <Sparkles className="h-3.5 w-3.5" /> Discover with AI
+              </Button>
+              <Button size="sm" onClick={save} disabled={!dirty || saving}>
+                <Save className="h-3.5 w-3.5" /> {saving ? "Saving…" : "Save"}
+              </Button>
+            </>
+          }
+        />
+      }
+    >
       {/* metric strip */}
       <div className="mb-6 flex flex-wrap items-center gap-x-8 gap-y-2 border-b border-border pb-4">
         <Metric label="Node labels"   value={nodes.length} />
@@ -311,7 +314,7 @@ export function SchemaPage() {
           {error}
         </div>
       )}
-    </>
+    </PageContainer>
   );
 }
 

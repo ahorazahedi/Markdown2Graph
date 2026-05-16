@@ -12,6 +12,10 @@ from .config import Settings
 
 
 def init_logging(level: str = "INFO") -> None:
+    import warnings
+    # LangChain + Pydantic emit noisy serializer warnings for structured-output
+    # outputs that don't round-trip exactly. Harmless; silence them.
+    warnings.filterwarnings("ignore", category=UserWarning, module=r"pydantic.*")
     logging.basicConfig(
         format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
         level=level,
@@ -40,6 +44,22 @@ class Neo4jManager:
         with self._lock:
             if self._driver is not None:
                 return
+            self._driver = GraphDatabase.driver(
+                settings.neo4j_uri,
+                auth=(settings.neo4j_username, settings.neo4j_password),
+                max_connection_lifetime=3600,
+            )
+            self._database = settings.neo4j_database
+
+    def reconfigure(self, settings: Settings) -> None:
+        """Tear down the existing driver and rebuild with new settings."""
+        with self._lock:
+            if self._driver is not None:
+                try:
+                    self._driver.close()
+                except Exception:
+                    pass
+                self._driver = None
             self._driver = GraphDatabase.driver(
                 settings.neo4j_uri,
                 auth=(settings.neo4j_username, settings.neo4j_password),

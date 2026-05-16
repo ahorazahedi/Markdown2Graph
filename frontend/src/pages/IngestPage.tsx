@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/PageHeader";
+import { PageContainer } from "@/components/PageContainer";
 import { DocumentStatusBadge } from "@/components/StatusBadge";
 import { api, DocumentRow, JobSnapshot, Schema } from "@/lib/api";
 import { useUnsavedGuard } from "@/lib/unsavedGuard";
@@ -101,25 +102,27 @@ export function IngestPage() {
   const schemaReady = !!schema && schema.node_labels.length > 0;
 
   return (
-    <>
-      <PageHeader
-        title="Ingest"
-        description="Run extraction over selected documents, or all pending. Re-extract wipes prior graph state for those documents and rebuilds it from scratch."
-        actions={
-          <>
-            <Button variant="outline" size="sm" onClick={() => start("pending")}
-                    disabled={!schemaReady || pendingCount === 0}>
-              <Play className="h-3.5 w-3.5" /> Run pending ({pendingCount})
-            </Button>
-            <Button size="sm" onClick={() => start("selected")}
-                    disabled={!schemaReady || selected.size === 0}>
-              {reextract ? <RotateCcw className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-              {reextract ? "Re-extract" : "Run"} selected ({selected.size})
-            </Button>
-          </>
-        }
-      />
-
+    <PageContainer
+      header={
+        <PageHeader
+          title="Ingest"
+          description="Run extraction over selected documents, or all pending. Re-extract wipes prior graph state for those documents and rebuilds it from scratch."
+          actions={
+            <>
+              <Button variant="outline" size="sm" onClick={() => start("pending")}
+                      disabled={!schemaReady || pendingCount === 0}>
+                <Play className="h-3.5 w-3.5" /> Run pending ({pendingCount})
+              </Button>
+              <Button size="sm" onClick={() => start("selected")}
+                      disabled={!schemaReady || selected.size === 0}>
+                {reextract ? <RotateCcw className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                {reextract ? "Re-extract" : "Run"} selected ({selected.size})
+              </Button>
+            </>
+          }
+        />
+      }
+    >
       {!schemaReady && (
         <div className="mb-4 rounded-sm border border-[hsl(var(--warning))]/40 bg-[hsl(var(--warning))]/10 px-3 py-2 text-sm text-[hsl(var(--warning))]">
           No schema configured yet. Visit <span className="font-medium">Schema</span> to define node labels and relationships before running ingest.
@@ -255,6 +258,6 @@ export function IngestPage() {
       </Card>
 
       {error && <div className="mt-3 text-sm text-destructive">{error}</div>}
-    </>
+    </PageContainer>
   );
 }

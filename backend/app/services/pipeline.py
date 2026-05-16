@@ -116,7 +116,8 @@ class IngestionPipeline:
                 if reextract:
                     # purge previous graph state for this file before reprocessing
                     self.repo.delete_document(rec["file_name"])
-                stats = self._process_document(doc)
+                stats = self._process_document(doc, progress=progress,
+                                                file_idx=i, file_total=total)
                 self.state.set_status(rec["id"], "completed")
                 self.state.set_counts(
                     rec["id"],
@@ -166,7 +167,20 @@ class IngestionPipeline:
         }
 
     # ------------------------------------------------------------------
-    def _process_document(self, doc: MarkdownDoc) -> dict:
+    def _process_document(self, doc: MarkdownDoc,
+                          progress: Callable[[JobUpdate], None] | None = None,
+                          file_idx: int = 0, file_total: int = 1) -> dict:
+        progress = progress or (lambda _u: None)
+        # progress portion this file gets within the 0.05..0.90 window
+        base = 0.05 + 0.85 * file_idx / max(1, file_total)
+        span = 0.85 / max(1, file_total)
+        def _emit(local: float, message: str, extra: dict | None = None):
+            progress(JobUpdate(
+                stage="extracting",
+                message=message,
+                progress=base + span * max(0.0, min(1.0, local)),
+                extra={"file": doc.file_name, **(extra or {})},
+            ))
         self.repo.upsert_document(
             file_name=doc.file_name,
             sha1=doc.sha1,
@@ -180,6 +194,8 @@ class IngestionPipeline:
         if not chunks:
             self.repo.set_document_status(doc.file_name, "Empty")
             return {"chunks": 0, "entities": 0, "relationships": 0}
+        _emit(0.05, f"{doc.file_name}: chunked into {len(chunks)} chunks",
+              {"chunks_total": len(chunks)})
 
         self.repo.write_chunks(
             doc.file_name,
@@ -196,6 +212,7 @@ class IngestionPipeline:
         )
         self.repo.link_first_and_next(doc.file_name, [c.id for c in chunks])
 
+        _emit(0.15, f"{doc.file_name}: embedding {len(chunks)} chunks")
         try:
             from ..llm import with_tag
             with with_tag("embedding"):
@@ -203,22 +220,49 @@ class IngestionPipeline:
             self.repo.write_chunk_embeddings(
                 [{"id": c.id, "embedding": v} for c, v in zip(chunks, vectors)]
             )
+            _emit(0.30, f"{doc.file_name}: embeddings written")
         except Exception as e:
             log.warning("embedding failed for %s: %s", doc.file_name, e)
+            _emit(0.30, f"{doc.file_name}: embedding skipped ({e})",
+                  {"level": "warn", "embedding_error": str(e)})
 
         s = self.settings
         combine = max(1, s.chunks_to_combine)
-        lc_docs = []
         from langchain_core.documents import Document
+        windows: list[list] = []
         for i in range(0, len(chunks), combine):
-            window = chunks[i : i + combine]
+            windows.append(chunks[i : i + combine])
+
+        # extract per-window so the progress bar advances continuously over
+        # potentially hundreds of LLM calls per document
+        ent_count = 0
+        rel_count = 0
+        for w_idx, window in enumerate(windows):
             text = "\n\n".join(w.text for w in window)
             chunk_id = window[0].id
-            lc_docs.append(
-                Document(page_content=text, metadata={"chunk_id": chunk_id, "file_name": doc.file_name})
+            lc_docs = [Document(page_content=text,
+                                metadata={"chunk_id": chunk_id, "file_name": doc.file_name})]
+            try:
+                graph_docs = self.extractor.extract(lc_docs)
+                e, r = self.repo.write_graph_documents(doc.file_name, graph_docs)
+                ent_count += e
+                rel_count += r
+            except Exception as ex:
+                log.warning("chunk %s extraction failed: %s", chunk_id, ex)
+                _emit(
+                    0.30 + 0.65 * (w_idx + 1) / max(1, len(windows)),
+                    f"{doc.file_name}: chunk {w_idx + 1}/{len(windows)} failed — {ex}",
+                    {"level": "error", "chunk_id": chunk_id,
+                     "chunk_index": w_idx + 1, "chunks_total": len(windows),
+                     "error": str(ex)},
+                )
+                continue
+            _emit(
+                0.30 + 0.65 * (w_idx + 1) / max(1, len(windows)),
+                f"{doc.file_name}: chunk {w_idx + 1}/{len(windows)} → +{e} entities, +{r} rels",
+                {"chunk_id": chunk_id, "chunk_index": w_idx + 1,
+                 "chunks_total": len(windows), "entities": e, "relationships": r},
             )
-        graph_docs = self.extractor.extract(lc_docs)
-        ent_count, rel_count = self.repo.write_graph_documents(doc.file_name, graph_docs)
 
         self.repo.set_document_status(
             doc.file_name,

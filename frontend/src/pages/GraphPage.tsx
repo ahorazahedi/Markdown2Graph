@@ -7,6 +7,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
+import { PageContainer } from "@/components/PageContainer";
 import { GraphViewer } from "@/components/GraphViewer";
 import { api, AppConfig, DocumentRow, GraphExplore } from "@/lib/api";
 import { confirm } from "@/lib/confirm";
@@ -53,37 +54,41 @@ export function GraphPage({ config }: { config: AppConfig | null }) {
   const browserHref = config?.neo4j.uri.replace(/^bolt:\/\//, "http://").replace(/:7687/, ":7474");
 
   return (
-    <>
-      <PageHeader
-        title="Graph"
-        description="Live state of the Neo4j database."
-        actions={
-          <>
-            <Button variant="outline" size="sm" onClick={refresh} disabled={busy}>
-              <RefreshCw className={busy ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} /> Refresh
-            </Button>
-            {browserHref && (
-              <a href={browserHref} target="_blank" rel="noreferrer"
-                 className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-border px-3 text-sm hover:bg-accent">
-                <ExternalLink className="h-3.5 w-3.5" /> Open Neo4j Browser
-              </a>
-            )}
-            <Button variant="destructive" size="sm"
-                    onClick={async () => {
-                      const ok = await confirm({
-                        title: "Wipe the entire graph?",
-                        description: "Deletes every node and relationship in Neo4j. Document records in the app database are kept (status reset to pending).",
-                        confirmText: "Wipe graph",
-                        variant: "destructive",
-                      });
-                      if (!ok) return;
-                      await api.clearGraph(); refresh(); loadExplore();
-                    }}>
-              <Trash2 className="h-3.5 w-3.5" /> Clear
-            </Button>
-          </>
-        }
-      />
+    <PageContainer
+      maxWidth="max-w-[1600px]"
+      header={
+        <PageHeader
+          title="Graph"
+          description="Live state of the Neo4j database."
+          actions={
+            <>
+              <Button variant="outline" size="sm" onClick={refresh} disabled={busy}>
+                <RefreshCw className={busy ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} /> Refresh
+              </Button>
+              {browserHref && (
+                <a href={browserHref} target="_blank" rel="noreferrer"
+                   className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-border px-3 text-sm hover:bg-accent">
+                  <ExternalLink className="h-3.5 w-3.5" /> Open Neo4j Browser
+                </a>
+              )}
+              <Button variant="destructive" size="sm"
+                      onClick={async () => {
+                        const ok = await confirm({
+                          title: "Wipe the entire graph?",
+                          description: "Deletes every node and relationship in Neo4j. Document records in the app database are kept (status reset to pending).",
+                          confirmText: "Wipe graph",
+                          variant: "destructive",
+                        });
+                        if (!ok) return;
+                        await api.clearGraph(); refresh(); loadExplore();
+                      }}>
+                <Trash2 className="h-3.5 w-3.5" /> Clear
+              </Button>
+            </>
+          }
+        />
+      }
+    >
 
       <Tabs defaultValue="viewer">
         <TabsList className="mb-4">
@@ -186,6 +191,6 @@ export function GraphPage({ config }: { config: AppConfig | null }) {
           )}
         </TabsContent>
       </Tabs>
-    </>
+    </PageContainer>
   );
 }

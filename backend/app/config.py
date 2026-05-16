@@ -92,6 +92,43 @@ class Settings(BaseSettings):
         return self.llm_api_key or self.openrouter_api_key
 
 
+_TYPE_COERCE = {
+    "llm_temperature": float,
+    "llm_max_tokens": int,
+    "embedding_dimension": int,
+}
+
+
+def _load_overrides() -> dict:
+    """Read user overrides from SQLite. Imported lazily to dodge cycles."""
+    try:
+        from .repositories.settings_repository import SettingsRepository, ALLOWED_KEYS
+
+        raw = SettingsRepository().load()
+    except Exception:
+        return {}
+    out: dict = {}
+    for k, v in raw.items():
+        if k not in ALLOWED_KEYS or v is None or v == "":
+            continue
+        cast = _TYPE_COERCE.get(k)
+        try:
+            out[k] = cast(v) if cast else v
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    base = Settings()
+    overrides = _load_overrides()
+    if overrides:
+        return base.model_copy(update=overrides)
+    return base
+
+
+def reload_settings() -> Settings:
+    """Drop the cached Settings so the next get_settings() picks up new overrides."""
+    get_settings.cache_clear()
+    return get_settings()

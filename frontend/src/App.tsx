@@ -1,8 +1,7 @@
 import { AppShell, useAppConfig, useHashRoute } from "@/components/AppShell";
-import { PageContainer } from "@/components/PageContainer";
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog";
 import { ConfirmHost } from "@/lib/confirm";
-import { SetupPage } from "@/pages/SetupPage";
+import { SettingsPage } from "@/pages/SettingsPage";
 import { SchemaPage } from "@/pages/SchemaPage";
 import { DocumentsPage } from "@/pages/DocumentsPage";
 import { IngestPage } from "@/pages/IngestPage";
@@ -17,12 +16,12 @@ export default function App() {
   return (
     <>
       <AppShell config={config} route={route} onRouteChange={setRoute}>
-        {route === "setup"      && <PageContainer><SetupPage config={config} /></PageContainer>}
-        {route === "documents"  && <PageContainer><DocumentsPage /></PageContainer>}
-        {route === "schema"     && <PageContainer><SchemaPage /></PageContainer>}
-        {route === "ingest"     && <PageContainer><IngestPage /></PageContainer>}
-        {route === "graph"      && <PageContainer maxWidth="max-w-[1600px]"><GraphPage config={config} /></PageContainer>}
-        {route === "prompts"    && <PageContainer><PromptsPage /></PageContainer>}
+        {route === "settings"   && <SettingsPage />}
+        {route === "documents"  && <DocumentsPage />}
+        {route === "schema"     && <SchemaPage />}
+        {route === "ingest"     && <IngestPage />}
+        {route === "graph"      && <GraphPage config={config} />}
+        {route === "prompts"    && <PromptsPage />}
         {route === "llm-calls"  && <LLMCallsPage />}
       </AppShell>
       <UnsavedChangesDialog />

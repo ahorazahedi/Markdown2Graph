@@ -218,6 +218,40 @@ export const api = {
   llmStats: () => jsonFetch<LLMLogStats>("/api/llm-calls/stats"),
   llmClear: () => jsonFetch<{ deleted: number }>("/api/llm-calls", { method: "DELETE" }),
 
+  // settings
+  getSettings: () => jsonFetch<SettingsView>("/api/settings"),
+  saveLLMSettings: (body: LLMSettingsUpdate) =>
+    jsonFetch<SettingsView>("/api/settings/llm", { method: "PUT", body: JSON.stringify(body) }),
+  saveNeo4jSettings: (body: Neo4jSettingsUpdate) =>
+    jsonFetch<SettingsView & { reconnect: { ok: boolean; error: string | null } }>(
+      "/api/settings/neo4j",
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  testLLM: (body: { base_url?: string; api_key?: string; model?: string }) =>
+    jsonFetch<{ ok: boolean; latency_ms?: number; status?: number; error?: string; model?: string }>(
+      "/api/settings/test/llm",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  testEmbedding: (body: { base_url?: string; api_key?: string; model?: string; dimension?: number }) =>
+    jsonFetch<{ ok: boolean; latency_ms?: number; status?: number; error?: string; dimension?: number; model?: string }>(
+      "/api/settings/test/embedding",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  testNeo4j: (body: { uri?: string; username?: string; password?: string; database?: string }) =>
+    jsonFetch<{ ok: boolean; latency_ms?: number; error?: string; database?: string }>(
+      "/api/settings/test/neo4j",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  listModels: (params: { base_url?: string; api_key?: string; kind?: "chat" | "embedding" | "all" }) => {
+    const q = new URLSearchParams();
+    if (params.base_url) q.set("base_url", params.base_url);
+    if (params.api_key) q.set("api_key", params.api_key);
+    if (params.kind) q.set("kind", params.kind);
+    return jsonFetch<{ ok: boolean; error?: string; models: ModelOption[] }>(
+      `/api/settings/models?${q.toString()}`,
+    );
+  },
+
   // prompts
   listPrompts: () => jsonFetch<{ items: PromptRow[] }>("/api/prompts"),
   getPrompt: (key: string) => jsonFetch<PromptRow>(`/api/prompts/${encodeURIComponent(key)}`),
@@ -232,6 +266,41 @@ export const api = {
       method: "POST", body: JSON.stringify(body),
     }),
 };
+
+export interface SettingsView {
+  llm: {
+    base_url: string;
+    api_key_masked: string | null;
+    api_key_set: boolean;
+    model: string;
+    temperature: number;
+    max_tokens: number;
+  };
+  embedding: { provider: string; model: string; dimension: number };
+  neo4j: { uri: string; username: string; password_set: boolean; database: string };
+}
+
+export interface LLMSettingsUpdate {
+  base_url?: string;
+  api_key?: string;
+  model?: string;
+  embedding_provider?: string;
+  embedding_model?: string;
+  embedding_dimension?: number;
+}
+
+export interface Neo4jSettingsUpdate {
+  uri?: string;
+  username?: string;
+  password?: string;
+  database?: string;
+}
+
+export interface ModelOption {
+  id: string;
+  owned_by: string;
+  kind: "chat" | "embedding";
+}
 
 export interface PromptRow {
   key: string;

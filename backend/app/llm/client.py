@@ -75,20 +75,20 @@ def build_embedder(settings: Settings | None = None) -> Tuple[object, int]:
             raise RuntimeError(
                 "Embeddings provider needs an api key — set OPENROUTER_API_KEY or LLM_API_KEY"
             )
+        # NOTE: passing dimensions= to OpenAIEmbeddings makes some OpenRouter
+        # model endpoints (notably google/gemini-embedding-001) return empty
+        # arrays. Leave it off; the Neo4j vector index is sized from
+        # EMBEDDING_DIMENSION which the user must configure to match.
         emb = OpenAIEmbeddings(
             model=s.embedding_model,
             api_key=s.effective_llm_api_key,
             base_url=s.effective_llm_base_url,
-            # OpenAIEmbeddings sends a "dimensions" param when supported.
-            # Gemini embedding-001 returns 3072 by default; set explicitly
-            # so Neo4j vector index matches.
-            dimensions=s.embedding_dimension,
             default_headers={
                 "HTTP-Referer": "https://github.com/text2graph",
                 "X-Title": "text2graph-medical",
             },
             # Smaller batch keeps us under OpenRouter's per-request token cap.
-            chunk_size=64,
+            chunk_size=32,
         )
         return emb, s.embedding_dimension
     raise ValueError(f"Unknown embedding provider: {s.embedding_provider}")

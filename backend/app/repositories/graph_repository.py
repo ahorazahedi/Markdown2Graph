@@ -158,47 +158,54 @@ class GraphRepository:
     def write_graph_documents(self, file_name: str, graph_docs: list) -> tuple[int, int]:
         """Persist nodes + relationships extracted by LLMGraphTransformer.
 
-        Each graph_doc has .source.metadata.chunk_id (we set it), .nodes, .relationships.
-        Returns (entity_count, relationship_count).
+        Pure-Cypher: groups nodes/rels by sanitized label/type and emits one
+        MERGE per group with the literal label interpolated into the query.
+        Label/type strings are validated by `_sanitize_label` and
+        `_sanitize_rel`, which restrict the output to `[A-Za-z0-9_]`, so
+        string interpolation is safe.
+
+        This avoids the apoc.merge.* procedures which require the APOC
+        plugin to be installed in Neo4j.
         """
-        node_batch: list[dict] = []
-        rel_batch: list[dict] = []
+        from collections import defaultdict
+
+        nodes_by_label: dict[str, list[dict]] = defaultdict(list)
+        rels_by_type: dict[str, list[dict]] = defaultdict(list)
         chunk_entity_links: list[dict] = []
+        seen_node_ids: set[str] = set()
 
         for gd in graph_docs:
             chunk_id = (gd.source.metadata or {}).get("chunk_id")
             for n in gd.nodes:
-                node_batch.append(
-                    {
-                        "id": str(n.id),
-                        "type": self._sanitize_label(n.type) or "Entity",
-                        "props": {k: v for k, v in (getattr(n, "properties", {}) or {}).items() if v is not None},
-                    }
-                )
+                label = self._sanitize_label(n.type) or "Entity"
+                nid = str(n.id)
+                props = {k: v for k, v in (getattr(n, "properties", {}) or {}).items() if v is not None}
+                nodes_by_label[label].append({"id": nid, "props": props})
+                seen_node_ids.add(nid)
                 if chunk_id:
-                    chunk_entity_links.append({"chunk_id": chunk_id, "node_id": str(n.id),
-                                                "node_type": self._sanitize_label(n.type) or "Entity"})
+                    chunk_entity_links.append({"chunk_id": chunk_id, "node_id": nid})
             for r in gd.relationships:
-                rel_batch.append(
-                    {
-                        "src_id": str(r.source.id),
-                        "src_type": self._sanitize_label(r.source.type) or "Entity",
-                        "dst_id": str(r.target.id),
-                        "dst_type": self._sanitize_label(r.target.type) or "Entity",
-                        "rel_type": self._sanitize_rel(r.type) or "RELATED_TO",
-                        "props": {k: v for k, v in (getattr(r, "properties", {}) or {}).items() if v is not None},
-                    }
-                )
+                rel_type = self._sanitize_rel(r.type) or "RELATED_TO"
+                rels_by_type[rel_type].append({
+                    "src_id": str(r.source.id),
+                    "dst_id": str(r.target.id),
+                    "props": {k: v for k, v in (getattr(r, "properties", {}) or {}).items() if v is not None},
+                })
 
-        if node_batch:
+        # ---- nodes: one MERGE query per distinct sanitized label ----
+        for label, batch in nodes_by_label.items():
+            # `label` is sanitized to [A-Za-z0-9_]; safe to backtick-quote.
             self._run(
-                """
+                f"""
                 UNWIND $batch AS row
-                CALL apoc.merge.node(['__Entity__', row.type], {id: row.id}, row.props, row.props) YIELD node
-                RETURN count(node)
+                MERGE (n:`{label}` {{id: row.id}})
+                  ON CREATE SET n :`__Entity__`
+                SET n += row.props
                 """,
-                batch=node_batch,
+                batch=batch,
             )
+
+        # ---- chunk -> entity links ----
         if chunk_entity_links:
             self._run(
                 """
@@ -209,19 +216,23 @@ class GraphRepository:
                 """,
                 links=chunk_entity_links,
             )
-        if rel_batch:
+
+        # ---- relationships: one MERGE query per distinct sanitized type ----
+        total_rel = 0
+        for rel_type, batch in rels_by_type.items():
+            total_rel += len(batch)
             self._run(
-                """
+                f"""
                 UNWIND $batch AS row
-                MATCH (a:__Entity__ {id: row.src_id})
-                MATCH (b:__Entity__ {id: row.dst_id})
-                CALL apoc.merge.relationship(a, row.rel_type, {}, row.props, b, row.props) YIELD rel
-                RETURN count(rel)
+                MATCH (a:__Entity__ {{id: row.src_id}})
+                MATCH (b:__Entity__ {{id: row.dst_id}})
+                MERGE (a)-[r:`{rel_type}`]->(b)
+                SET r += row.props
                 """,
-                batch=rel_batch,
+                batch=batch,
             )
 
-        return len({n["id"] for n in node_batch}), len(rel_batch)
+        return len(seen_node_ids), total_rel
 
     # ---------- post-processing ----------
     def create_chunk_vector_index(self, dimension: int) -> None:

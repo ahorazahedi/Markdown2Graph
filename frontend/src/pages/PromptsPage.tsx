@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
+import { PageContainer } from "@/components/PageContainer";
 import { api, PromptRow } from "@/lib/api";
 import { useUnsavedGuard } from "@/lib/unsavedGuard";
 import { confirm } from "@/lib/confirm";
@@ -110,27 +111,29 @@ export function PromptsPage() {
   };
 
   return (
-    <>
-      <PageHeader
-        title="Prompts"
-        description="System prompts that drive schema discovery and entity extraction. Templates use Jinja2; variables are injected at runtime."
-        actions={
-          <>
-            {savedAt && Date.now() - savedAt < 4000 && (
-              <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                <Check className="h-3 w-3" /> saved
-              </span>
-            )}
-            <Button variant="outline" size="sm" onClick={reset} disabled={!active || busy}>
-              <RotateCcw className="h-3.5 w-3.5" /> Reset to default
-            </Button>
-            <Button size="sm" onClick={save} disabled={!dirty || busy}>
-              <Save className="h-3.5 w-3.5" /> Save
-            </Button>
-          </>
-        }
-      />
-
+    <PageContainer
+      header={
+        <PageHeader
+          title="Prompts"
+          description="System prompts that drive schema discovery and entity extraction. Templates use Jinja2; variables are injected at runtime."
+          actions={
+            <>
+              {savedAt && Date.now() - savedAt < 4000 && (
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Check className="h-3 w-3" /> saved
+                </span>
+              )}
+              <Button variant="outline" size="sm" onClick={reset} disabled={!active || busy}>
+                <RotateCcw className="h-3.5 w-3.5" /> Reset to default
+              </Button>
+              <Button size="sm" onClick={save} disabled={!dirty || busy}>
+                <Save className="h-3.5 w-3.5" /> Save
+              </Button>
+            </>
+          }
+        />
+      }
+    >
       <div className="grid gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
         {/* prompt list */}
         <Card>
@@ -238,6 +241,6 @@ export function PromptsPage() {
           </div>
         )}
       </div>
-    </>
+    </PageContainer>
   );
 }

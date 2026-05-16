@@ -5,27 +5,27 @@ import { api, AppConfig } from "@/lib/api";
 import { guard } from "@/lib/unsavedGuard";
 
 export type Route =
-  | "setup"
   | "documents"
   | "schema"
   | "ingest"
   | "graph"
   | "prompts"
-  | "llm-calls";
+  | "llm-calls"
+  | "settings";
 
 const NAV: { key: Route; label: string; icon: any; hint: string }[] = [
-  { key: "setup",      label: "Setup",      icon: Settings2,  hint: "Connection" },
   { key: "documents",  label: "Documents",  icon: FileText,   hint: "Markdown registry" },
   { key: "schema",     label: "Schema",     icon: GitBranch,  hint: "Nodes & relationships" },
   { key: "ingest",     label: "Ingest",     icon: Play,       hint: "Run extraction" },
   { key: "graph",      label: "Graph",      icon: Database,   hint: "Viewer & stats" },
   { key: "prompts",    label: "Prompts",    icon: FileCode2,  hint: "System templates" },
   { key: "llm-calls",  label: "LLM Calls",  icon: ScrollText, hint: "Audit log" },
+  { key: "settings",   label: "Settings",   icon: Settings2,  hint: "LLM & Neo4j config" },
 ];
 
 function routeFromHash(): Route {
   const h = window.location.hash.replace(/^#\/?/, "");
-  return (NAV.find((n) => n.key === h)?.key ?? "setup") as Route;
+  return (NAV.find((n) => n.key === h)?.key ?? "documents") as Route;
 }
 
 export function AppShell({ children, config, route, onRouteChange }: {
