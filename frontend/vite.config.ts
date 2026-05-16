@@ -10,8 +10,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // 127.0.0.1, not localhost — Node 18+ resolves localhost to IPv6 (::1)
+      // first, but Flask binds IPv4 → ECONNREFUSED.
       "/api": {
-        target: "http://localhost:8000",
+        target: "http://127.0.0.1:8000",
         changeOrigin: true,
       },
     },
