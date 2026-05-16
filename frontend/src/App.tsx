@@ -69,11 +69,17 @@ export default function App() {
 
       <main className="container py-8">
         {tab === "wizard" && (
-          <div className="grid gap-8 md:grid-cols-[260px_1fr]">
+          <>
+            <div className="mb-6 md:hidden">
+              <Stepper steps={STEPS} current={step} orientation="horizontal" />
+            </div>
+            <div className="grid gap-8 md:grid-cols-[220px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]">
             <aside className="hidden md:block">
-              <Stepper steps={STEPS} current={step} />
+              <div className="sticky top-20">
+                <Stepper steps={STEPS} current={step} orientation="vertical" />
+              </div>
             </aside>
-            <section>
+            <section className="min-w-0">
               {step === 0 && <StepConnect config={config} onNext={() => setStep(1)} />}
               {step === 1 && (
                 <StepFolder
@@ -103,7 +109,8 @@ export default function App() {
               )}
               {step === 4 && <StepResults config={config} onRestart={() => setStep(1)} />}
             </section>
-          </div>
+            </div>
+          </>
         )}
         {tab === "llm-calls" && <LLMCallsPage />}
       </main>
