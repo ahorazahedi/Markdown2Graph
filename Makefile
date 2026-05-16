@@ -28,10 +28,16 @@ install:
 	cd backend && pip install -r requirements.txt
 
 backend:
-	cd backend && python -m app.wsgi
+	./scripts/backend_start.sh
+
+backend-prod:
+	./scripts/backend_start.sh --prod
 
 frontend:
-	cd frontend && npm install --silent && npm run dev
+	./scripts/frontend_start.sh
+
+frontend-build:
+	./scripts/frontend_start.sh --build
 
 test:
 	cd backend && pytest
