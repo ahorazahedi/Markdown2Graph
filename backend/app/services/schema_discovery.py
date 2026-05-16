@@ -6,11 +6,7 @@ import random
 from pathlib import Path
 from typing import List, Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
 from ..config import get_settings
-from ..llm import build_chat_llm
-from ..prompts import SCHEMA_DISCOVERY_SYSTEM
 from .markdown_loader import MarkdownLoader
 
 log = logging.getLogger(__name__)
@@ -44,6 +40,11 @@ class SchemaDiscoveryService:
             if excerpt:
                 excerpts.append(f"## File: {d.file_name}\n\n{excerpt}")
         joined = "\n\n---\n\n".join(excerpts)
+
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        from ..llm import build_chat_llm
+        from ..prompts import SCHEMA_DISCOVERY_SYSTEM
 
         sys_prompt = SCHEMA_DISCOVERY_SYSTEM
         if extra_instructions:
