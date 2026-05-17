@@ -210,7 +210,9 @@ class PostProcessingService:
                 continue
             self.repo.write_chunk_embeddings(
                 [{"id": row["cid"], "embedding": vec}
-                 for row, vec in zip(chunk, vectors)]
+                 for row, vec in zip(chunk, vectors)],
+                model=settings.embedding_model,
+                dim=dim,
             )
             total += len(chunk)
         try:
@@ -254,7 +256,9 @@ class PostProcessingService:
                 continue
             self.repo.write_entity_embeddings(
                 [{"eid": row["eid"], "embedding": vec}
-                 for row, vec in zip(chunk, vectors)]
+                 for row, vec in zip(chunk, vectors)],
+                model=settings.embedding_model,
+                dim=dim,
             )
             total += len(chunk)
         try:
@@ -292,7 +296,9 @@ class PostProcessingService:
                 continue
             self.repo.write_community_embeddings(
                 [{"eid": row["eid"], "embedding": vec}
-                 for row, vec in zip(chunk, vectors)]
+                 for row, vec in zip(chunk, vectors)],
+                model=settings.embedding_model,
+                dim=dim,
             )
             total += len(chunk)
         try:

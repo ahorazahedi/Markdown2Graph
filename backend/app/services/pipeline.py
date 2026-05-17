@@ -267,7 +267,9 @@ class IngestionPipeline:
             with with_tag("embedding"):
                 vectors = self.embedder.embed_documents([c.text for c in chunks])
             self.repo.write_chunk_embeddings(
-                [{"id": c.id, "embedding": v} for c, v in zip(chunks, vectors)]
+                [{"id": c.id, "embedding": v} for c, v in zip(chunks, vectors)],
+                model=self.settings.embedding_model,
+                dim=self.embed_dim,
             )
             _emit(0.30, f"{doc.file_name}: embeddings written")
         except Exception as e:

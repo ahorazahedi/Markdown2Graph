@@ -191,17 +191,30 @@ class GraphRepository:
                 pairs=pairs,
             )
 
-    def write_chunk_embeddings(self, rows: List[dict]) -> None:
-        """`rows`: dicts with id and embedding (list[float])."""
+    def write_chunk_embeddings(self, rows: List[dict],
+                               *, model: str | None = None,
+                               dim: int | None = None) -> None:
+        """`rows`: dicts with id and embedding (list[float]).
+
+        When `model`/`dim` supplied, tag node with provenance so the
+        re-embed system can detect stale vectors after a model switch.
+        """
         if not rows:
             return
+        now = datetime.now(timezone.utc).isoformat()
         self._run(
             """
             UNWIND $rows AS row
             MATCH (c:Chunk {id: row.id})
             CALL db.create.setNodeVectorProperty(c, 'embedding', row.embedding)
+            SET c.embedding_model = $model,
+                c.embedding_dim   = $dim,
+                c.embedded_at     = $now
             """,
             rows=rows,
+            model=model,
+            dim=dim,
+            now=now,
         )
 
     # ---------- entities & relationships ----------
@@ -377,29 +390,47 @@ class GraphRepository:
         )
         return [dict(r) for r in rows]
 
-    def write_entity_embeddings(self, rows: list[dict]) -> None:
+    def write_entity_embeddings(self, rows: list[dict],
+                                 *, model: str | None = None,
+                                 dim: int | None = None) -> None:
         """rows = [{eid, embedding}, ...]"""
         if not rows:
             return
+        now = datetime.now(timezone.utc).isoformat()
         self._run(
             """
             UNWIND $rows AS row
             MATCH (e:__Entity__) WHERE elementId(e) = row.eid
             CALL db.create.setNodeVectorProperty(e, 'embedding', row.embedding)
+            SET e.embedding_model = $model,
+                e.embedding_dim   = $dim,
+                e.embedded_at     = $now
             """,
             rows=rows,
+            model=model,
+            dim=dim,
+            now=now,
         )
 
-    def write_community_embeddings(self, rows: list[dict]) -> None:
+    def write_community_embeddings(self, rows: list[dict],
+                                    *, model: str | None = None,
+                                    dim: int | None = None) -> None:
         if not rows:
             return
+        now = datetime.now(timezone.utc).isoformat()
         self._run(
             """
             UNWIND $rows AS row
             MATCH (c:__Community__) WHERE elementId(c) = row.eid
             CALL db.create.setNodeVectorProperty(c, 'embedding', row.embedding)
+            SET c.embedding_model = $model,
+                c.embedding_dim   = $dim,
+                c.embedded_at     = $now
             """,
             rows=rows,
+            model=model,
+            dim=dim,
+            now=now,
         )
 
     def create_chat_indexes(self) -> None:
@@ -1232,6 +1263,239 @@ class GraphRepository:
             limit=limit,
         )
         return [dict(r) for r in rows]
+
+    # ---------- re-embedding helpers ----------
+    # Centralized table so the API/service layer doesn't hardcode label
+    # strings. Keys map to (node-pattern, embedding property, vector-index
+    # name, optional preview-text expr).
+    _EMB_TARGETS = {
+        "chunk": {
+            "match": "(n:Chunk)",
+            "id_expr": "n.id",
+            "preview_expr": "left(coalesce(n.text, ''), 120)",
+            "index": "vector",
+        },
+        "entity": {
+            "match": "(n:__Entity__)",
+            "id_expr": "elementId(n)",
+            "preview_expr": "coalesce(n.id, '')",
+            "index": "entity_vector",
+        },
+        "community": {
+            "match": "(n:__Community__)",
+            "id_expr": "elementId(n)",
+            "preview_expr": "coalesce(n.title, n.id, '')",
+            "index": "community_vector",
+        },
+    }
+
+    def _target(self, node_type: str) -> dict:
+        if node_type not in self._EMB_TARGETS:
+            raise ValueError(
+                f"unknown node_type {node_type!r}; "
+                f"expected one of {list(self._EMB_TARGETS)}"
+            )
+        return self._EMB_TARGETS[node_type]
+
+    def count_embeddings(self, node_type: str) -> dict:
+        """Status snapshot for a node type.
+
+        Returns total count, how many have embeddings, and a breakdown by
+        recorded embedding_model. Nodes embedded before the model-tag
+        rollout report `null` as their model.
+        """
+        t = self._target(node_type)
+        rows = self._run(
+            f"""
+            MATCH {t['match']}
+            WITH n, n.embedding IS NOT NULL AS has_emb
+            RETURN
+              count(n) AS total,
+              sum(CASE WHEN has_emb THEN 1 ELSE 0 END) AS embedded,
+              collect(CASE WHEN has_emb
+                           THEN coalesce(n.embedding_model, '<unknown>')
+                           ELSE NULL END) AS models
+            """
+        )
+        if not rows:
+            return {"total": 0, "embedded": 0, "by_model": {}}
+        r = rows[0]
+        by_model: dict = {}
+        for m in (r["models"] or []):
+            if m is None:
+                continue
+            by_model[m] = by_model.get(m, 0) + 1
+        return {
+            "total": int(r["total"] or 0),
+            "embedded": int(r["embedded"] or 0),
+            "missing": int((r["total"] or 0) - (r["embedded"] or 0)),
+            "by_model": by_model,
+        }
+
+    def clear_embeddings(self, node_type: str,
+                          *, where_model: str | None = None,
+                          only_mismatched_dim: int | None = None) -> int:
+        """Null out the `embedding` (and provenance) property on matching nodes.
+
+        - `where_model=None, only_mismatched_dim=None`: clear ALL.
+        - `where_model="foo"`: clear only nodes whose `embedding_model = 'foo'`.
+        - `only_mismatched_dim=3072`: clear nodes whose recorded
+          embedding_dim differs from this value (used before re-creating a
+          vector index with a new dimension).
+        Returns count of nodes cleared.
+        """
+        t = self._target(node_type)
+        clauses = ["n.embedding IS NOT NULL"]
+        params: dict = {}
+        if where_model is not None:
+            clauses.append("n.embedding_model = $model")
+            params["model"] = where_model
+        if only_mismatched_dim is not None:
+            clauses.append("(n.embedding_dim IS NULL OR n.embedding_dim <> $dim)")
+            params["dim"] = int(only_mismatched_dim)
+        where = " AND ".join(clauses)
+        rows = self._run(
+            f"""
+            MATCH {t['match']}
+            WHERE {where}
+            SET n.embedding = NULL,
+                n.embedding_model = NULL,
+                n.embedding_dim = NULL,
+                n.embedded_at = NULL
+            RETURN count(n) AS cleared
+            """,
+            **params,
+        )
+        return int(rows[0]["cleared"] or 0) if rows else 0
+
+    def drop_vector_index(self, name: str) -> None:
+        """Drop a vector index by name. Safe if it doesn't exist."""
+        try:
+            self._run(f"DROP INDEX {name} IF EXISTS")
+        except Exception as e:
+            import logging
+            logging.warning("drop_vector_index(%s) failed: %s", name, e)
+
+    def vector_index_dim(self, name: str) -> int | None:
+        """Return the dimension of an existing vector index, or None."""
+        try:
+            rows = self._run(
+                """
+                SHOW INDEXES YIELD name, options
+                WHERE name = $name
+                RETURN options AS opts LIMIT 1
+                """,
+                name=name,
+            )
+        except Exception:
+            return None
+        if not rows:
+            return None
+        opts = rows[0].get("opts") or {}
+        cfg = opts.get("indexConfig") or {} if isinstance(opts, dict) else {}
+        v = cfg.get("vector.dimensions") if isinstance(cfg, dict) else None
+        try:
+            return int(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def list_nodes_for_embedding(self, node_type: str, *,
+                                  scope: str = "missing",
+                                  target_model: str | None = None,
+                                  target_dim: int | None = None,
+                                  limit: int = 10_000) -> list[dict]:
+        """Return rows of nodes that need (re-)embedding under a scope.
+
+        - `missing`: only nodes whose `embedding IS NULL`.
+        - `stale`: missing OR `embedding_model <> target_model` OR
+          `embedding_dim <> target_dim`. Requires `target_model`.
+        - `all`: every node of that type, regardless of state.
+
+        Row shape unified to `{id, text}` so the service layer doesn't
+        branch on node type. `id` is the routing key the matching
+        `write_*_embeddings` expects:
+          - chunk → `Chunk.id`
+          - entity/community → `elementId(n)`
+        """
+        t = self._target(node_type)
+        if node_type == "chunk":
+            text_expr = "coalesce(n.text, '')"
+        elif node_type == "entity":
+            text_expr = "coalesce(n.id, '') + ' — ' + coalesce(n.description, '')"
+        else:  # community
+            text_expr = "coalesce(n.title, n.id, '') + ' — ' + coalesce(n.summary, '')"
+        clauses: list[str] = []
+        params: dict = {"limit": int(limit)}
+        if scope == "missing":
+            clauses.append("n.embedding IS NULL")
+        elif scope == "stale":
+            if not target_model:
+                raise ValueError("scope='stale' requires target_model")
+            sub = ["n.embedding IS NULL",
+                   "n.embedding_model IS NULL",
+                   "n.embedding_model <> $tmodel"]
+            params["tmodel"] = target_model
+            if target_dim is not None:
+                sub.append("n.embedding_dim <> $tdim")
+                params["tdim"] = int(target_dim)
+            clauses.append("(" + " OR ".join(sub) + ")")
+        elif scope == "all":
+            pass
+        else:
+            raise ValueError(f"unknown scope {scope!r}")
+        if node_type == "chunk":
+            clauses.append("n.text IS NOT NULL AND n.text <> ''")
+        elif node_type == "community":
+            clauses.append("n.summary IS NOT NULL AND n.summary <> ''")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self._run(
+            f"""
+            MATCH {t['match']}
+            {where}
+            RETURN {t['id_expr']} AS id, {text_expr} AS text
+            LIMIT $limit
+            """,
+            **params,
+        )
+        return [dict(r) for r in rows]
+
+    def write_embeddings_unified(self, node_type: str, rows: list[dict],
+                                  *, model: str, dim: int) -> None:
+        """Single entrypoint matching `list_nodes_for_embedding` output.
+
+        `rows` shape: [{id, embedding}, ...] where `id` is the value
+        returned in the listing query (Chunk.id for chunks, elementId for
+        entity/community).
+        """
+        if not rows:
+            return
+        if node_type == "chunk":
+            rows2 = rows  # already keyed by id
+            self.write_chunk_embeddings(rows2, model=model, dim=dim)
+        elif node_type == "entity":
+            self.write_entity_embeddings(
+                [{"eid": r["id"], "embedding": r["embedding"]} for r in rows],
+                model=model, dim=dim,
+            )
+        elif node_type == "community":
+            self.write_community_embeddings(
+                [{"eid": r["id"], "embedding": r["embedding"]} for r in rows],
+                model=model, dim=dim,
+            )
+        else:
+            raise ValueError(f"unknown node_type {node_type!r}")
+
+    def recreate_vector_index(self, node_type: str, dimension: int) -> None:
+        """Drop + create the vector index for a node type. Use when
+        switching to a model with a different embedding dimension."""
+        t = self._target(node_type)
+        self.drop_vector_index(t["index"])
+        if node_type == "chunk":
+            self.create_chunk_vector_index(dimension)
+        elif node_type == "entity":
+            self.create_entity_vector_index(dimension)
+        elif node_type == "community":
+            self.create_community_vector_index(dimension)
 
     # ---------- internal ----------
     @staticmethod

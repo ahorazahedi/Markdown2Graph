@@ -411,6 +411,21 @@ export const api = {
       { method: "POST", body: JSON.stringify({ rating, comment }) },
     ),
 
+  // embeddings lifecycle (status, re-embed, switch-model, clear)
+  embeddingsStatus: () => jsonFetch<EmbeddingsStatus>("/api/embeddings/status"),
+  reembed: (body: ReembedBody) =>
+    jsonFetch<{ job_id: string; scope: string; types: string[]; clear_first: boolean }>(
+      "/api/embeddings/reembed", { method: "POST", body: JSON.stringify(body) },
+    ),
+  switchEmbeddingModel: (body: SwitchEmbeddingModelBody) =>
+    jsonFetch<{ job_id: string; model: string; dim: number; provider: string | null }>(
+      "/api/embeddings/switch-model", { method: "POST", body: JSON.stringify(body) },
+    ),
+  clearEmbeddings: (body: { types?: string[]; where_model?: string; confirm: true }) =>
+    jsonFetch<{ cleared: Record<string, number | string> }>(
+      "/api/embeddings", { method: "DELETE", body: JSON.stringify(body) },
+    ),
+
   // runtime knobs (extraction retry etc.) — distinct from /api/settings (connection)
   listRuntime: () => jsonFetch<{ items: RuntimeSettingSpec[] }>("/api/runtime"),
   putRuntime: (body: Record<string, any>) =>
@@ -418,6 +433,38 @@ export const api = {
       method: "PUT", body: JSON.stringify(body),
     }),
 };
+
+export interface EmbeddingTypeStat {
+  total: number;
+  embedded: number;
+  missing: number;
+  stale: number;
+  by_model: Record<string, number>;
+  index_dim: number | null;
+  error?: string;
+}
+
+export interface EmbeddingsStatus {
+  current_model: string;
+  current_dim: number;
+  provider: string;
+  types: Record<"chunk" | "entity" | "community", EmbeddingTypeStat>;
+}
+
+export interface ReembedBody {
+  scope: "missing" | "stale" | "all";
+  types?: Array<"chunk" | "entity" | "community">;
+  model?: string;
+  dim?: number;
+  clear_first?: boolean;
+}
+
+export interface SwitchEmbeddingModelBody {
+  model: string;
+  dim: number;
+  provider?: string;
+  types?: Array<"chunk" | "entity" | "community">;
+}
 
 export interface RuntimeSettingSpec {
   key: string;

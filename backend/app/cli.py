@@ -168,5 +168,81 @@ def clear(yes: bool):
     console.print("[green]graph cleared[/]")
 
 
+@cli.command("embeddings-status")
+def embeddings_status():
+    """Show embedding coverage per node type + by-model breakdown."""
+    _bootstrap()
+    from .services.embedding_service import EmbeddingService
+    snap = EmbeddingService().status()
+    console.print(f"[bold]current model[/]: {snap['current_model']}  "
+                  f"dim={snap['current_dim']}  provider={snap['provider']}")
+    for nt, s in snap["types"].items():
+        if "error" in s:
+            console.print(f"[red]{nt}: {s['error']}[/]")
+            continue
+        console.print(
+            f"[cyan]{nt}[/]: total={s['total']}  embedded={s['embedded']}  "
+            f"missing={s.get('missing', 0)}  stale={s.get('stale', 0)}  "
+            f"index_dim={s.get('index_dim')}"
+        )
+        for m, c in (s.get("by_model") or {}).items():
+            console.print(f"    {m}: {c}")
+
+
+@cli.command()
+@click.option("--scope", type=click.Choice(["missing", "stale", "all"]),
+              default="missing")
+@click.option("--type", "types", multiple=True,
+              type=click.Choice(["chunk", "entity", "community"]),
+              help="Node types to re-embed (default: all three)")
+@click.option("--model", default=None, help="Override embedding model")
+@click.option("--dim", type=int, default=None, help="Override embedding dimension")
+@click.option("--clear-first", is_flag=True,
+              help="Null out embeddings before re-embedding")
+def reembed(scope: str, types: tuple, model: str | None,
+            dim: int | None, clear_first: bool):
+    """Re-embed nodes (chunks/entities/communities) under a scope."""
+    _bootstrap()
+    from .services.embedding_service import EmbeddingService, NODE_TYPES
+
+    selected = list(types) if types else list(NODE_TYPES)
+    svc = EmbeddingService()
+
+    def _progress(u):
+        console.print(f"  [{u.progress * 100:5.1f}%] {u.stage}: {u.message}")
+
+    rep = svc.reembed(scope=scope, types=selected, model=model, dim=dim,
+                      clear_first=clear_first, update=_progress)
+    console.print_json(data=rep)
+
+
+@cli.command("switch-embedding-model")
+@click.option("--model", required=True, help="New embedding model id")
+@click.option("--dim", type=int, required=True, help="New embedding dimension")
+@click.option("--provider", default=None,
+              help="Optional new embedding provider (openrouter, local, ...)")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
+def switch_embedding_model(model: str, dim: int, provider: str | None,
+                            yes: bool):
+    """Persist new embedding settings + re-embed every node (destructive)."""
+    _bootstrap()
+    if not yes and not click.confirm(
+        f"This will clear ALL embeddings and re-embed everything with "
+        f"{model} (dim={dim}). Continue?",
+        default=False,
+    ):
+        console.print("aborted")
+        sys.exit(1)
+    from .services.embedding_service import EmbeddingService
+    svc = EmbeddingService()
+
+    def _progress(u):
+        console.print(f"  [{u.progress * 100:5.1f}%] {u.stage}: {u.message}")
+
+    rep = svc.switch_model(model=model, dim=dim, provider=provider,
+                            update=_progress)
+    console.print_json(data=rep)
+
+
 if __name__ == "__main__":
     cli()
