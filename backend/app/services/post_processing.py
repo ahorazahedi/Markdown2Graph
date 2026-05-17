@@ -144,11 +144,29 @@ class PostProcessingService:
                 log.exception("community summaries failed")
                 rep.errors.append(f"summaries: {e}")
 
+        def _band_progress(label: str, p0: float, p1: float):
+            """Return on_progress(done, total) emitting `label: done/total`
+            scaled into [p0, p1]."""
+            span = max(0.0, p1 - p0)
+            def _cb(done: int, total: int):
+                frac = (done / total) if total else 0.0
+                remaining = max(0, total - done)
+                notify(
+                    f"post: {label} {done}/{total} "
+                    f"(remaining {remaining})",
+                    min(p1, p0 + span * frac),
+                    {"done": done, "total": total, "remaining": remaining},
+                )
+            return _cb
+
         _check_cancel()
         if chunk_embeddings:
             try:
                 notify("post: chunk embedding backfill starting", 0.91, None)
-                rep.chunk_embeddings = self.embed_chunks(is_cancelled=cancelled)
+                rep.chunk_embeddings = self.embed_chunks(
+                    is_cancelled=cancelled,
+                    on_progress=_band_progress("chunk embeddings", 0.91, 0.92),
+                )
                 notify(f"post: chunk embeddings done — {rep.chunk_embeddings}", 0.92, None)
             except Exception as e:
                 log.exception("chunk embeddings failed")
@@ -158,7 +176,10 @@ class PostProcessingService:
         if entity_embeddings:
             try:
                 notify("post: entity embeddings starting", 0.92, None)
-                rep.entity_embeddings = self.embed_entities(is_cancelled=cancelled)
+                rep.entity_embeddings = self.embed_entities(
+                    is_cancelled=cancelled,
+                    on_progress=_band_progress("entity embeddings", 0.92, 0.96),
+                )
                 notify(f"post: entity embeddings done — {rep.entity_embeddings}", 0.96, None)
             except Exception as e:
                 log.exception("entity embeddings failed")
@@ -168,7 +189,10 @@ class PostProcessingService:
         if community_embeddings:
             try:
                 notify("post: community embeddings starting", 0.97, None)
-                rep.community_embeddings = self.embed_communities(is_cancelled=cancelled)
+                rep.community_embeddings = self.embed_communities(
+                    is_cancelled=cancelled,
+                    on_progress=_band_progress("community embeddings", 0.97, 0.99),
+                )
                 notify(f"post: community embeddings done — {rep.community_embeddings}", 0.99, None)
             except Exception as e:
                 log.exception("community embeddings failed")
@@ -179,7 +203,8 @@ class PostProcessingService:
 
     # ---------------- embeddings ----------------
 
-    def embed_chunks(self, *, is_cancelled: Callable[[], bool] | None = None) -> dict:
+    def embed_chunks(self, *, is_cancelled: Callable[[], bool] | None = None,
+                     on_progress: Callable[[int, int], None] | None = None) -> dict:
         """Backfill `Chunk.embedding` for chunks created without one.
 
         Repairs ingests where embedding failed (e.g. provider outage,
@@ -196,8 +221,9 @@ class PostProcessingService:
         if not pending:
             self.repo.create_chunk_vector_index(dim)
             return {"embedded": 0, "skipped": "no chunks pending"}
+        n_total = len(pending)
         total = 0
-        for i in range(0, len(pending), batch_n):
+        for i in range(0, n_total, batch_n):
             if is_cancelled and is_cancelled():
                 raise JobCancelled("chunk embedding cancelled")
             chunk = pending[i:i + batch_n]
@@ -215,13 +241,19 @@ class PostProcessingService:
                 dim=dim,
             )
             total += len(chunk)
+            if on_progress:
+                try:
+                    on_progress(total, n_total)
+                except Exception:
+                    pass
         try:
             self.repo.create_chunk_vector_index(dim)
         except Exception as e:
             log.warning("chunk vector index create failed: %s", e)
         return {"embedded": total, "dim": dim}
 
-    def embed_entities(self, *, is_cancelled: Callable[[], bool] | None = None) -> dict:
+    def embed_entities(self, *, is_cancelled: Callable[[], bool] | None = None,
+                       on_progress: Callable[[int, int], None] | None = None) -> dict:
         """Compute `__Entity__.embedding` for nodes that don't have one.
 
         Text fed to embedder = `id + " — " + description` (mirrors
@@ -240,8 +272,9 @@ class PostProcessingService:
         if not pending:
             self.repo.create_entity_vector_index(dim)
             return {"embedded": 0, "skipped": "no entities pending"}
+        n_total = len(pending)
         total = 0
-        for i in range(0, len(pending), batch_n):
+        for i in range(0, n_total, batch_n):
             if is_cancelled and is_cancelled():
                 raise JobCancelled("entity embedding cancelled")
             chunk = pending[i:i + batch_n]
@@ -261,13 +294,19 @@ class PostProcessingService:
                 dim=dim,
             )
             total += len(chunk)
+            if on_progress:
+                try:
+                    on_progress(total, n_total)
+                except Exception:
+                    pass
         try:
             self.repo.create_entity_vector_index(dim)
         except Exception as e:
             log.warning("entity_vector index create failed: %s", e)
         return {"embedded": total, "dim": dim}
 
-    def embed_communities(self, *, is_cancelled: Callable[[], bool] | None = None) -> dict:
+    def embed_communities(self, *, is_cancelled: Callable[[], bool] | None = None,
+                          on_progress: Callable[[int, int], None] | None = None) -> dict:
         """Same as `embed_entities` but for `__Community__.summary`."""
         from ..config import get_settings
         from ..llm import build_embedder
@@ -280,8 +319,9 @@ class PostProcessingService:
         if not pending:
             self.repo.create_community_vector_index(dim)
             return {"embedded": 0, "skipped": "no community summaries pending"}
+        n_total = len(pending)
         total = 0
-        for i in range(0, len(pending), batch_n):
+        for i in range(0, n_total, batch_n):
             if is_cancelled and is_cancelled():
                 raise JobCancelled("community embedding cancelled")
             chunk = pending[i:i + batch_n]
@@ -301,6 +341,11 @@ class PostProcessingService:
                 dim=dim,
             )
             total += len(chunk)
+            if on_progress:
+                try:
+                    on_progress(total, n_total)
+                except Exception:
+                    pass
         try:
             self.repo.create_community_vector_index(dim)
         except Exception as e:

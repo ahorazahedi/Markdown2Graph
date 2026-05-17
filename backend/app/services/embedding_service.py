@@ -215,9 +215,12 @@ class EmbeddingService:
                 type_report["embedded"] = done
                 inner = (i + len(batch)) / total
                 p = type_progress + (inner / max(1, n_types))
+                remaining = max(0, total - done)
                 _notify(f"reembed:{nt}",
-                        f"{nt}: {done}/{total}", min(0.99, p),
-                        {"done": done, "total": total})
+                        f"{nt}: {done}/{total} (remaining {remaining})",
+                        min(0.99, p),
+                        {"done": done, "total": total,
+                         "remaining": remaining})
                 # bail immediately if cancel landed mid-batch — without this,
                 # a slow single-batch type runs to completion before the outer
                 # _check_cancel() at the top of the next type fires.
