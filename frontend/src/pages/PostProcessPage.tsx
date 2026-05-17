@@ -33,7 +33,7 @@ const DEFAULTS: Options = {
   orphans: false,
   communities: true,
   summaries: true,
-  chunk_embeddings: false,
+  chunk_embeddings: true,
   entity_embeddings: true,
   community_embeddings: true,
   community_levels: 2,
@@ -222,7 +222,7 @@ export function PostProcessPage() {
                     disabled={!opts.communities}
                     hint={!opts.communities ? "requires community detection" : undefined} />
               <Task name="Chunk embeddings (backfill)"
-                    desc="Backfill Chunk.embedding for chunks created without one — repairs failed-embedding ingests without re-running entity extraction. Skipped by default; enable after an embedding-provider outage."
+                    desc="Backfill Chunk.embedding for chunks created without one — repairs failed-embedding ingests without re-running entity extraction. Idempotent — skipped chunks already embedded."
                     checked={opts.chunk_embeddings}
                     onChange={(v) => set("chunk_embeddings", v)} />
               <Task name="Entity embeddings"

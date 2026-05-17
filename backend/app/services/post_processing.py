@@ -72,7 +72,7 @@ class PostProcessingService:
             orphans: bool = False,
             communities: bool = True,
             summaries: bool = True,
-            chunk_embeddings: bool = False,
+            chunk_embeddings: bool = True,
             entity_embeddings: bool = True,
             community_embeddings: bool = True,
             community_levels: int = 2,

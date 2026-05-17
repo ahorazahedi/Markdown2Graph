@@ -89,7 +89,7 @@ def post_process():
           "orphans":         bool (default false),
           "communities":     bool (default true),
           "summaries":       bool (default true),
-          "chunk_embeddings":     bool (default false) — backfill missing
+          "chunk_embeddings":     bool (default true) — backfill missing
                                   Chunk.embedding values (no LLM cost),
           "entity_embeddings":    bool (default true),
           "community_embeddings": bool (default true),
@@ -122,7 +122,7 @@ def post_process():
         "orphans": bool(body.get("orphans", False)),
         "communities": bool(body.get("communities", True)),
         "summaries": bool(body.get("summaries", True)),
-        "chunk_embeddings": bool(body.get("chunk_embeddings", False)),
+        "chunk_embeddings": bool(body.get("chunk_embeddings", True)),
         "entity_embeddings": bool(body.get("entity_embeddings", True)),
         "community_embeddings": bool(body.get("community_embeddings", True)),
         "community_levels": int(body.get("community_levels", 2) or 2),
