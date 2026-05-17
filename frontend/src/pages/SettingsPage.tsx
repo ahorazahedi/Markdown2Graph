@@ -16,11 +16,12 @@ import { api, ModelOption, ResetCounts, ResetTarget, SettingsView } from "@/lib/
 import { confirm } from "@/lib/confirm";
 import { RuntimeSettingsPanel } from "@/components/RuntimeSettingsPanel";
 
-type Section = "llm" | "neo4j" | "pipeline" | "reset";
+type Section = "llm" | "neo4j" | "chat" | "pipeline" | "reset";
 
 const SECTIONS: { key: Section; label: string; icon: any; hint: string }[] = [
   { key: "llm",      label: "LLM & Embeddings", icon: Brain,    hint: "Provider, model, key" },
   { key: "neo4j",    label: "Neo4j",            icon: Database, hint: "Graph connection" },
+  { key: "chat",     label: "Chat / RAG",       icon: Brain,    hint: "Retrieval tuning knobs" },
   { key: "pipeline", label: "Pipeline",         icon: Brain,    hint: "Retries & extraction tuning" },
   { key: "reset",    label: "Reset / Cleanup",  icon: Trash2,   hint: "Wipe data, fresh setup" },
 ];
@@ -85,6 +86,12 @@ export function SettingsPage() {
   const [nDb, setNDb] = useState("");
   const [showPass, setShowPass] = useState(false);
 
+  // Chat / RAG form
+  const [chatTopK, setChatTopK] = useState<number>(5);
+  const [chatSplit, setChatSplit] = useState<number>(3000);
+  const [chatThreshold, setChatThreshold] = useState<number>(0.10);
+  const [savingChat, setSavingChat] = useState(false);
+
   // models lists
   const [chatModels, setChatModels] = useState<ModelOption[]>([]);
   const [embModels, setEmbModels] = useState<ModelOption[]>([]);
@@ -118,6 +125,11 @@ export function SettingsPage() {
       setNUri(v.neo4j.uri || "");
       setNUser(v.neo4j.username || "");
       setNDb(v.neo4j.database || "");
+      if (v.chat) {
+        setChatTopK(v.chat.top_k);
+        setChatSplit(v.chat.doc_split_size);
+        setChatThreshold(v.chat.embedding_filter_threshold);
+      }
     } finally {
       setLoading(false);
     }
@@ -254,6 +266,23 @@ export function SettingsPage() {
     }
   };
 
+  const saveChat = async () => {
+    setSavingChat(true);
+    try {
+      const v = await api.saveChatSettings({
+        top_k: chatTopK,
+        doc_split_size: chatSplit,
+        embedding_filter_threshold: chatThreshold,
+      });
+      setView(v);
+      flashToast({ kind: "ok", msg: "Chat settings saved." });
+    } catch (e: any) {
+      flashToast({ kind: "err", msg: e?.message ?? String(e) });
+    } finally {
+      setSavingChat(false);
+    }
+  };
+
   // ---------- reset handlers ----------
   const loadResetCounts = async () => {
     setResetCountsLoading(true);
@@ -355,7 +384,12 @@ export function SettingsPage() {
         {savingNeo ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
         Save Neo4j settings
       </Button>
-    ) : (
+    ) : section === "chat" ? (
+      <Button size="sm" onClick={saveChat} disabled={savingChat}>
+        {savingChat ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+        Save chat settings
+      </Button>
+    ) : section === "reset" ? (
       <>
         <Button variant="outline" size="sm" onClick={loadResetCounts} disabled={resetCountsLoading}>
           <RefreshCw className={resetCountsLoading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
@@ -371,7 +405,7 @@ export function SettingsPage() {
           Run reset ({effectiveSel.size})
         </Button>
       </>
-    );
+    ) : null;
 
   if (loading) {
     return (
@@ -628,6 +662,101 @@ export function SettingsPage() {
           </Card>
 
         </div>
+        )}
+
+        {section === "chat" && (
+          <div className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Chat / RAG tuning</CardTitle>
+                <CardDescription>
+                  Retrieval knobs applied to every RAG turn. Changes take effect
+                  on the next question — no restart.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <div className="space-y-1.5">
+                    <Label>top_k</Label>
+                    <Input
+                      type="number" min={1} max={100} step={1}
+                      value={chatTopK}
+                      onChange={(e) => setChatTopK(Number(e.target.value))}
+                    />
+                    <p className="text-2xs text-muted-foreground">
+                      Documents pulled from the vector/hybrid index per question.
+                      Higher = better recall, more tokens, slower. Default 5.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>doc_split_size</Label>
+                    <Input
+                      type="number" min={64} max={8000} step={1}
+                      value={chatSplit}
+                      onChange={(e) => setChatSplit(Number(e.target.value))}
+                    />
+                    <p className="text-2xs text-muted-foreground">
+                      Token chunk size used by the post-retrieval splitter before
+                      the embeddings filter. Smaller = finer evidence selection.
+                      Default 3000.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>embedding_filter_threshold</Label>
+                    <Input
+                      type="number" min={0} max={1} step={0.01}
+                      value={chatThreshold}
+                      onChange={(e) => setChatThreshold(Number(e.target.value))}
+                    />
+                    <p className="text-2xs text-muted-foreground">
+                      Cosine-similarity floor for the post-retrieval compression
+                      filter. 0 disables filtering. Default 0.10.
+                    </p>
+                  </div>
+                </div>
+                <div className="rounded-sm border border-border/60 bg-muted/30 p-3 text-2xs leading-snug text-muted-foreground">
+                  <p className="mb-1 font-medium text-foreground">Tuning tips</p>
+                  <ul className="ml-4 list-disc space-y-1">
+                    <li>If answers say "not enough info" but you can see the
+                      fact in the corpus, raise <span className="font-mono">top_k</span> (try 10–15).</li>
+                    <li>If retrieved chunks are too long and dilute the prompt,
+                      drop <span className="font-mono">doc_split_size</span> to
+                      400–600.</li>
+                    <li>Raise <span className="font-mono">embedding_filter_threshold</span> to
+                      tighten relevance; lower (e.g. 0) to keep more context.</li>
+                  </ul>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Chat prompts</CardTitle>
+                <CardDescription>
+                  Every chat-related prompt template (system, question rewriter,
+                  title generator) is editable on the
+                  <a href="#/prompts" className="ml-1 text-primary underline-offset-2 hover:underline">
+                    Prompts page
+                  </a>.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ul className="text-xs font-mono">
+                  <li className="flex items-center justify-between border-b border-border/60 py-1.5 last:border-0">
+                    <span>chat_system</span>
+                    <span className="text-2xs text-muted-foreground">RAG answer prompt</span>
+                  </li>
+                  <li className="flex items-center justify-between border-b border-border/60 py-1.5 last:border-0">
+                    <span>chat_question_rewrite</span>
+                    <span className="text-2xs text-muted-foreground">History-aware query rewriter</span>
+                  </li>
+                  <li className="flex items-center justify-between py-1.5">
+                    <span>chat_title_generate</span>
+                    <span className="text-2xs text-muted-foreground">Auto-title after first turn</span>
+                  </li>
+                </ul>
+              </CardContent>
+            </Card>
+          </div>
         )}
 
         {section === "pipeline" && <RuntimeSettingsPanel />}

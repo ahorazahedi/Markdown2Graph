@@ -111,6 +111,9 @@ _TYPE_COERCE = {
     "llm_temperature": float,
     "llm_max_tokens": int,
     "embedding_dimension": int,
+    "chat_top_k": int,
+    "chat_doc_split_size": int,
+    "chat_embedding_filter_threshold": float,
 }
 
 

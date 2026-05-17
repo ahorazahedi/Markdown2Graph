@@ -313,6 +313,7 @@ class ChatService:
             retriever = base_retriever
 
         # ---- 1. history-aware rewrite ----
+        t_rewrite0 = time.time()
         if history:
             rewrite_prompt = self.prompts.render(
                 "chat_question_rewrite",
@@ -324,8 +325,10 @@ class ChatService:
             search_query = (getattr(rewritten, "content", None) or str(rewritten)).strip() or question
         else:
             search_query = question
+        rewrite_ms = int((time.time() - t_rewrite0) * 1000)
 
         # ---- 2. retrieve ----
+        t_retrieve0 = time.time()
         with with_tag("chat_retrieve"):
             docs = retriever.invoke(search_query)
 
@@ -333,11 +336,15 @@ class ChatService:
             keep = set(document_names)
             docs = [d for d in docs
                     if (d.metadata or {}).get("fileName") in keep]
+        retrieve_ms = int((time.time() - t_retrieve0) * 1000)
 
         # ---- 3. context + structured info ----
+        t_format0 = time.time()
         context_text, info = self._format_docs(docs, mode=mode)
+        format_ms = int((time.time() - t_format0) * 1000)
 
         # ---- 4. answer ----
+        t_answer0 = time.time()
         answer_llm = build_chat_llm(self.settings, tag="chat_answer")
         system_text = self.prompts.render(
             "chat_system",
@@ -350,12 +357,73 @@ class ChatService:
             [HumanMessage(content=question)]
         )
         text, usage = self._invoke_llm(answer_llm, lc_messages, stream_handler)
+        answer_ms = int((time.time() - t_answer0) * 1000)
+
+        # ---- 5. renumber citations in-order, filter sources to cited ----
+        text, sources_out, chunkdetails_out, cited_indices = (
+            self._renumber_citations(text, info)
+        )
+        # Replace nodedetails.chunkdetails with cited subset when LLM cited
+        nodedetails_out = dict(info.get("nodedetails") or {})
+        if cited_indices:
+            nodedetails_out["chunkdetails"] = chunkdetails_out
+
+        # Reorder retrieved_docs so that cited docs occupy the new [1..M]
+        # slots (in citation order) — frontend can then map a [N] reference
+        # directly to retrieved_docs[N-1] for hover preview.
+        original_retrieved = info.get("retrieved_docs") or []
+        if cited_indices:
+            in_cited = set(cited_indices)
+            reordered: list[dict] = []
+            for new_pos, old in enumerate(cited_indices, 1):
+                if 1 <= old <= len(original_retrieved):
+                    d = dict(original_retrieved[old - 1])
+                    d["index"] = new_pos
+                    d["cited"] = True
+                    reordered.append(d)
+            next_idx = len(reordered) + 1
+            for i, d in enumerate(original_retrieved, 1):
+                if i in in_cited:
+                    continue
+                d2 = dict(d)
+                d2["index"] = next_idx
+                d2["cited"] = False
+                reordered.append(d2)
+                next_idx += 1
+            retrieved_for_trace = reordered
+            cited_for_trace = list(range(1, len(cited_indices) + 1))
+        else:
+            retrieved_for_trace = [
+                {**d, "cited": False} for d in original_retrieved
+            ]
+            cited_for_trace = []
 
         elapsed_ms = int((time.time() - t0) * 1000)
+        trace = {
+            "mode": mode,
+            "search_query": search_query,
+            "k": k,
+            "embedding_provider": self.settings.embedding_provider,
+            "embedding_model": self.settings.embedding_model,
+            "compression_enabled": cfg["node_label"] == "Chunk",
+            "compression_threshold": float(self.settings.chat_embedding_filter_threshold),
+            "doc_split_size": int(self.settings.chat_doc_split_size),
+            "retrieved_count": len(retrieved_for_trace),
+            "retrieved_docs": retrieved_for_trace,
+            "cited_indices": cited_for_trace,
+            "stages_ms": {
+                "rewrite": rewrite_ms,
+                "retrieve": retrieve_ms,
+                "format": format_ms,
+                "answer": answer_ms,
+                "total": elapsed_ms,
+            },
+            "context_text": context_text,
+        }
         return {
             "answer": text,
-            "sources": info["sources"],
-            "nodedetails": info["nodedetails"],
+            "sources": sources_out if cited_indices else info["sources"],
+            "nodedetails": nodedetails_out,
             "entities": info["entities"],
             "context_preview": context_text[:1200],
             "rewritten_question": search_query,
@@ -365,6 +433,7 @@ class ChatService:
             "response_time_ms": elapsed_ms,
             "mode": mode,
             "model": getattr(answer_llm, "model_name", None) or self.settings.llm_model,
+            "trace": trace,
         }
 
     # ------------------------------------------------------------------
@@ -429,6 +498,13 @@ class ChatService:
             "model": getattr(llm, "model_name", None) or self.settings.llm_model,
             "cypher": cypher,
             "rows": rows[:50] if isinstance(rows, list) else [],
+            "trace": {
+                "mode": "graph",
+                "search_query": question,
+                "cypher": cypher,
+                "rows": rows[:50] if isinstance(rows, list) else [],
+                "stages_ms": {"total": elapsed_ms},
+            },
         }
 
     # ------------------------------------------------------------------
@@ -464,6 +540,7 @@ class ChatService:
         seen_chunk: set[str] = set()
 
         parts: list[str] = []
+        retrieved: list[dict] = []
         for i, d in enumerate(docs, 1):
             meta = d.metadata or {}
             fname = meta.get("fileName") or meta.get("source")
@@ -472,6 +549,16 @@ class ChatService:
             comm_id = meta.get("communityId")
             text = d.page_content or meta.get("text") or ""
             score = meta.get("score") or meta.get("query_similarity_score")
+            retrieved.append({
+                "index": i,
+                "fileName": fname,
+                "chunkId": cid,
+                "entityId": eid,
+                "communityId": comm_id,
+                "score": float(score) if isinstance(score, (int, float)) else None,
+                "preview": (text or "").strip()[:600],
+                "text": (text or "").strip(),
+            })
 
             if cid and cid not in seen_chunk:
                 seen_chunk.add(cid)
@@ -518,8 +605,105 @@ class ChatService:
                 "nodes": all_entities,
                 "relationships": all_rels,
             },
+            "retrieved_docs": retrieved,
         }
         return "\n\n".join(parts), info
+
+    # ------------------------------------------------------------------
+    def generate_title(self, *, question: str, answer: str) -> str | None:
+        """Use the LLM + `chat_title_generate` prompt to produce a short
+        descriptive session title. Returns None on failure (caller should
+        fall back to the existing title).
+        """
+        q = (question or "").strip()
+        a = (answer or "").strip()
+        if not q:
+            return None
+        # Trim long answers — title prompt only needs a flavor
+        a_short = a[:1200]
+        try:
+            prompt = self.prompts.render(
+                "chat_title_generate", question=q, answer=a_short,
+            )
+        except Exception:
+            log.exception("chat_title_generate template render failed")
+            return None
+        try:
+            llm = build_chat_llm(self.settings, tag="chat_title")
+            # Soft cap output. Some LangChain ChatOpenAI versions accept
+            # `bind` to override max_tokens; fall back to a plain invoke.
+            with with_tag("chat_title"):
+                try:
+                    msg = llm.bind(max_tokens=40, temperature=0.0).invoke(prompt)
+                except Exception:
+                    msg = llm.invoke(prompt)
+        except Exception:
+            log.exception("chat_title LLM call failed")
+            return None
+        text = (getattr(msg, "content", None) or str(msg)).strip()
+        # Strip wrapping quotes / trailing punctuation, collapse whitespace
+        text = text.strip().strip('"').strip("'").rstrip(".!?:;,")
+        text = " ".join(text.split())
+        # Truncate hard at 80 chars
+        if len(text) > 80:
+            text = text[:77].rstrip() + "…"
+        return text or None
+
+    @staticmethod
+    def _renumber_citations(
+        text: str, info: dict
+    ) -> tuple[str, list, list, list[int]]:
+        """Renumber `[N]` references in the answer to `[1..M]` in order of
+        first appearance, and filter sources/chunkdetails to only the cited
+        documents. Returns `(new_text, sources, chunkdetails, cited_old_indices)`.
+
+        `cited_old_indices` lists the original retriever indices in the order
+        they appear in the answer — useful for tooltip mapping.
+        """
+        import re
+
+        mapping: dict[int, int] = {}
+        order: list[int] = []
+
+        def repl(m: "re.Match[str]") -> str:
+            try:
+                n = int(m.group(1))
+            except (TypeError, ValueError):
+                return m.group(0)
+            if n not in mapping:
+                mapping[n] = len(order) + 1
+                order.append(n)
+            return f"[{mapping[n]}]"
+
+        new_text = re.sub(r"\[(\d+)\]", repl, text or "")
+
+        if not order:
+            return new_text, info.get("sources") or [], (info.get("nodedetails") or {}).get("chunkdetails") or [], []
+
+        retrieved = info.get("retrieved_docs") or []
+        sources_map: dict[str, dict] = {}
+        cited_chunk_ids_in_order: list[str] = []
+        seen_chunk: set[str] = set()
+        for old in order:
+            if 1 <= old <= len(retrieved):
+                d = retrieved[old - 1]
+                fname = d.get("fileName")
+                cid = d.get("chunkId")
+                if cid and cid not in seen_chunk:
+                    seen_chunk.add(cid)
+                    cited_chunk_ids_in_order.append(cid)
+                if fname:
+                    row = sources_map.setdefault(
+                        fname, {"source_name": fname, "chunk_ids": []}
+                    )
+                    if cid and cid not in row["chunk_ids"]:
+                        row["chunk_ids"].append(cid)
+        cd_by_id = {
+            c.get("id"): c
+            for c in ((info.get("nodedetails") or {}).get("chunkdetails") or [])
+        }
+        chunkdetails = [cd_by_id[cid] for cid in cited_chunk_ids_in_order if cid in cd_by_id]
+        return new_text, list(sources_map.values()), chunkdetails, order
 
     @staticmethod
     def _history_to_lc(history: list[dict]) -> list:

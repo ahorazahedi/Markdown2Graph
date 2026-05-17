@@ -9,6 +9,7 @@ import logging
 from functools import lru_cache
 from typing import Tuple
 
+from langchain_core.embeddings import Embeddings
 from langchain_openai import ChatOpenAI
 
 from ..config import Settings, get_settings
@@ -86,7 +87,7 @@ def build_embedder(settings: Settings | None = None) -> Tuple[object, int]:
     raise ValueError(f"Unknown embedding provider: {s.embedding_provider}")
 
 
-class _OpenAICompatEmbedder:
+class _OpenAICompatEmbedder(Embeddings):
     """Minimal OpenAI-compatible embeddings client.
 
     Implements the LangChain `Embeddings` protocol (`embed_documents`,
@@ -102,6 +103,12 @@ class _OpenAICompatEmbedder:
         self.base_url = base_url.rstrip("/")
         self.batch_size = max(1, int(batch_size))
         self.timeout = timeout
+        # Single-slot cache of last query embedding. Retrieval pipelines
+        # (Neo4jVector similarity + EmbeddingsFilter) embed the same query
+        # string back-to-back; caching the most recent saves an API call
+        # and avoids redundant 429 risk on rate-limited providers.
+        self._last_query: str | None = None
+        self._last_query_vec: list[float] | None = None
 
     def embed_documents(self, texts):
         import requests
@@ -150,10 +157,12 @@ class _OpenAICompatEmbedder:
                     if not transient:
                         break
                 if attempt < attempts - 1:
+                    import random as _random
+                    jittered = delay * (0.75 + 0.5 * _random.random())
                     log.warning("embeddings transient error (attempt %d/%d): %s — "
                                 "sleeping %.1fs",
-                                attempt + 1, attempts, last_err, delay)
-                    _time.sleep(delay)
+                                attempt + 1, attempts, last_err, jittered)
+                    _time.sleep(jittered)
                     delay = min(delay * 2, 30.0)
             if not (payload and isinstance(payload, dict) and payload.get("data")):
                 raise RuntimeError(
@@ -165,4 +174,9 @@ class _OpenAICompatEmbedder:
         return out
 
     def embed_query(self, text: str):
-        return self.embed_documents([text])[0]
+        if text == self._last_query and self._last_query_vec is not None:
+            return self._last_query_vec
+        vec = self.embed_documents([text])[0]
+        self._last_query = text
+        self._last_query_vec = vec
+        return vec

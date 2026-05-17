@@ -281,6 +281,9 @@ export const api = {
       "/api/settings/neo4j",
       { method: "PUT", body: JSON.stringify(body) },
     ),
+  saveChatSettings: (body: ChatSettingsUpdate) =>
+    jsonFetch<SettingsView>("/api/settings/chat",
+      { method: "PUT", body: JSON.stringify(body) }),
   testLLM: (body: { base_url?: string; api_key?: string; model?: string }) =>
     jsonFetch<{ ok: boolean; latency_ms?: number; status?: number; error?: string; model?: string }>(
       "/api/settings/test/llm",
@@ -438,6 +441,7 @@ export interface EmbeddingTypeStat {
   total: number;
   embedded: number;
   missing: number;
+  ineligible?: number;
   stale: number;
   by_model: Record<string, number>;
   index_dim: number | null;
@@ -523,6 +527,17 @@ export interface SettingsView {
   };
   embedding: { provider: string; model: string; dimension: number };
   neo4j: { uri: string; username: string; password_set: boolean; database: string };
+  chat: {
+    top_k: number;
+    doc_split_size: number;
+    embedding_filter_threshold: number;
+  };
+}
+
+export interface ChatSettingsUpdate {
+  top_k?: number;
+  doc_split_size?: number;
+  embedding_filter_threshold?: number;
 }
 
 export interface LLMSettingsUpdate {
@@ -626,6 +641,41 @@ export interface ChatMessage {
   meta: Record<string, any>;
 }
 
+export interface RetrievedDoc {
+  index: number;
+  fileName: string | null;
+  chunkId: string | null;
+  entityId: string | null;
+  communityId: string | null;
+  score: number | null;
+  preview: string;
+  text: string;
+}
+
+export interface ChatTrace {
+  mode: string;
+  search_query: string;
+  k?: number;
+  embedding_provider?: string;
+  embedding_model?: string;
+  compression_enabled?: boolean;
+  compression_threshold?: number;
+  doc_split_size?: number;
+  retrieved_count?: number;
+  retrieved_docs?: RetrievedDoc[];
+  cited_indices?: number[];
+  stages_ms?: {
+    rewrite?: number;
+    retrieve?: number;
+    format?: number;
+    answer?: number;
+    total?: number;
+  };
+  context_text?: string;
+  cypher?: string;
+  rows?: any[];
+}
+
 export interface ChatAskResponse {
   session_id: string;
   user_message_id: number;
@@ -640,6 +690,7 @@ export interface ChatAskResponse {
     mode: string;
     model: string | null;
     rewritten_question: string | null;
+    trace?: ChatTrace | null;
   };
 }
 

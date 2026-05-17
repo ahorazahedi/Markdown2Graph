@@ -6,8 +6,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader } from "@/components/PageHeader";
 import { PageContainer } from "@/components/PageContainer";
@@ -25,10 +23,6 @@ export function EmbeddingsPage() {
   const [types, setTypes] = useState<Set<NodeType>>(new Set(ALL_TYPES));
   const [scope, setScope] = useState<"missing" | "stale" | "all">("missing");
   const [submitting, setSubmitting] = useState(false);
-
-  const [newModel, setNewModel] = useState("");
-  const [newDim, setNewDim] = useState<string>("");
-  const [newProvider, setNewProvider] = useState("");
 
   const [active, setActive] = useState<JobRun | null>(null);
   const [events, setEvents] = useState<JobEvent[]>([]);
@@ -114,38 +108,6 @@ export function EmbeddingsPage() {
     }
   };
 
-  const submitSwitch = async () => {
-    const dim = parseInt(newDim, 10);
-    if (!newModel.trim() || !Number.isFinite(dim) || dim <= 0) {
-      setError("model + positive integer dim required");
-      return;
-    }
-    const ok = await confirm({
-      title: "Switch embedding model?",
-      description: `This will clear ALL embeddings and re-embed every node with ${newModel} (dim=${dim}). This may take a while and chat retrieval will be degraded until it finishes.`,
-      confirmText: "Switch + re-embed",
-      variant: "destructive",
-    });
-    if (!ok) return;
-    setSubmitting(true);
-    try {
-      const r = await api.switchEmbeddingModel({
-        model: newModel.trim(),
-        dim,
-        provider: newProvider.trim() || undefined,
-        types: Array.from(types),
-      });
-      const snap = await api.getJob(r.job_id);
-      setActive(snap);
-      setEvents([]);
-      lastEventId.current = 0;
-    } catch (e: any) {
-      setError(e?.message || String(e));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const submitClear = async () => {
     if (types.size === 0) return;
     const ok = await confirm({
@@ -185,7 +147,7 @@ export function EmbeddingsPage() {
     <PageContainer>
       <PageHeader
         title="Embeddings"
-        description="Backfill, re-embed, or switch embedding model across chunks / entities / communities."
+        description="Backfill or re-embed chunks / entities / communities with the configured embedding model. Change the model in Settings → LLM & Embeddings."
         actions={
           <Button variant="ghost" size="sm" onClick={loadStatus} disabled={loading}>
             <RefreshCw className={loading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
@@ -218,6 +180,7 @@ export function EmbeddingsPage() {
                   <th className="text-right">Total</th>
                   <th className="text-right">Embedded</th>
                   <th className="text-right">Missing</th>
+                  <th className="text-right">Ineligible</th>
                   <th className="text-right">Stale</th>
                   <th className="text-right">Index dim</th>
                   <th className="text-left pl-3">By model</th>
@@ -233,9 +196,21 @@ export function EmbeddingsPage() {
                       <td className="text-right tabular-nums">{s.total ?? 0}</td>
                       <td className="text-right tabular-nums">{s.embedded ?? 0}</td>
                       <td className="text-right tabular-nums">
-                        {s.missing ?? 0 > 0
+                        {(s.missing ?? 0) > 0
                           ? <Badge variant="outline" className="px-1 py-0">{s.missing}</Badge>
                           : 0}
+                      </td>
+                      <td
+                        className="text-right tabular-nums text-muted-foreground"
+                        title={
+                          nt === "community"
+                            ? "Communities with no summary — cannot embed until summaries are generated."
+                            : nt === "chunk"
+                              ? "Chunks with empty text — cannot embed."
+                              : "Nodes that cannot be embedded under current eligibility rules."
+                        }
+                      >
+                        {s.ineligible ?? 0}
                       </td>
                       <td className="text-right tabular-nums">
                         {(s.stale ?? 0) > 0
@@ -258,104 +233,125 @@ export function EmbeddingsPage() {
       )}
 
       <Card className="mb-4">
-        <CardHeader className="pb-2">
+        <CardHeader className="pb-3">
           <CardTitle className="text-sm flex items-center gap-2">
             <Wand2 className="h-4 w-4" /> Re-embed
           </CardTitle>
           <CardDescription className="text-2xs">
-            Scope: <strong>missing</strong> = only NULL embeddings ·
-            <strong> stale</strong> = NULL or different model from current ·
-            <strong> all</strong> = clear + re-embed everything
+            Backfill or regenerate vectors using the configured model.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-2xs uppercase text-muted-foreground">Scope</span>
-              {(["missing", "stale", "all"] as const).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setScope(s)}
-                  disabled={!!isRunning}
-                  className={`rounded-sm px-2 py-1 text-xs ${
-                    scope === s
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground hover:bg-accent/60"
-                  }`}
-                >{s}</button>
-              ))}
+        <CardContent className="space-y-5">
+          {/* Scope */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-2xs font-medium uppercase tracking-wider text-muted-foreground">
+                Scope
+              </span>
+              <span className="text-2xs text-muted-foreground">
+                {scope === "missing" && "Only NULL embeddings"}
+                {scope === "stale" && "NULL or different model from current"}
+                {scope === "all" && "Clear + re-embed everything"}
+              </span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-2xs uppercase text-muted-foreground">Types</span>
-              {ALL_TYPES.map((t) => (
-                <label key={t} className="flex items-center gap-1 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={types.has(t)}
-                    onChange={() => toggleType(t)}
+            <div
+              role="radiogroup"
+              className="inline-flex w-full rounded-md border border-border bg-muted/30 p-0.5"
+            >
+              {(["missing", "stale", "all"] as const).map((s) => {
+                const active = scope === s;
+                return (
+                  <button
+                    key={s}
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setScope(s)}
                     disabled={!!isRunning}
-                  />
-                  {t}
-                </label>
-              ))}
+                    className={`flex-1 rounded-[5px] px-3 py-1.5 text-xs font-medium capitalize transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      active
+                        ? "bg-background text-foreground shadow-sm ring-1 ring-border"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {s}
+                  </button>
+                );
+              })}
             </div>
           </div>
-          <div className="flex gap-2">
-            <Button size="sm" onClick={submitReembed} disabled={!!isRunning || submitting || types.size === 0}>
-              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Re-embed"}
-            </Button>
-            <Button size="sm" variant="outline" onClick={submitClear} disabled={!!isRunning || submitting || types.size === 0}>
-              <Trash2 className="mr-1 h-3.5 w-3.5" /> Clear
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
 
-      <Card className="mb-4">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Switch embedding model</CardTitle>
-          <CardDescription className="text-2xs">
-            Persists the new settings, drops old vector indexes, clears every
-            embedding, then re-embeds across all selected types.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-3">
-          <div>
-            <Label className="text-2xs">Model</Label>
-            <Input
-              placeholder="openai/text-embedding-3-large"
-              value={newModel}
-              onChange={(e) => setNewModel(e.target.value)}
-              disabled={!!isRunning || submitting}
-              className="h-8 text-xs"
-            />
+          {/* Types */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-2xs font-medium uppercase tracking-wider text-muted-foreground">
+                Types
+              </span>
+              <span className="text-2xs text-muted-foreground">
+                {types.size} of {ALL_TYPES.length} selected
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {ALL_TYPES.map((t) => {
+                const checked = types.has(t);
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    role="checkbox"
+                    aria-checked={checked}
+                    onClick={() => toggleType(t)}
+                    disabled={!!isRunning}
+                    className={`group flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-medium capitalize transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+                      checked
+                        ? "border-foreground/60 bg-accent text-foreground"
+                        : "border-border bg-background text-muted-foreground hover:border-foreground/30 hover:text-foreground"
+                    }`}
+                  >
+                    <span
+                      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border transition-colors ${
+                        checked
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-border bg-background group-hover:border-foreground/50"
+                      }`}
+                    >
+                      {checked && <CheckCircle2 className="h-3 w-3" strokeWidth={3} />}
+                    </span>
+                    {t}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          <div>
-            <Label className="text-2xs">Dim</Label>
-            <Input
-              type="number"
-              placeholder="3072"
-              value={newDim}
-              onChange={(e) => setNewDim(e.target.value)}
-              disabled={!!isRunning || submitting}
-              className="h-8 text-xs"
-            />
-          </div>
-          <div>
-            <Label className="text-2xs">Provider (optional)</Label>
-            <Input
-              placeholder="openrouter / local / openai"
-              value={newProvider}
-              onChange={(e) => setNewProvider(e.target.value)}
-              disabled={!!isRunning || submitting}
-              className="h-8 text-xs"
-            />
-          </div>
-          <div className="md:col-span-3">
-            <Button size="sm" variant="destructive" onClick={submitSwitch}
-              disabled={!!isRunning || submitting || !newModel || !newDim}>
-              Switch model + re-embed all
+
+          {/* Actions */}
+          <div className="flex items-center gap-2 border-t border-border pt-4">
+            <Button
+              size="sm"
+              onClick={submitReembed}
+              disabled={!!isRunning || submitting || types.size === 0}
+              className="min-w-[110px]"
+            >
+              {submitting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Wand2 className="h-3.5 w-3.5" />
+              )}
+              Re-embed
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={submitClear}
+              disabled={!!isRunning || submitting || types.size === 0}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Clear
+            </Button>
+            {types.size === 0 && (
+              <span className="ml-auto text-2xs text-muted-foreground">
+                Select at least one type
+              </span>
+            )}
           </div>
         </CardContent>
       </Card>

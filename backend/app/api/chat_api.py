@@ -36,6 +36,37 @@ log = logging.getLogger(__name__)
 bp = Blueprint("chat", __name__)
 
 
+_AUTO_TITLE_PLACEHOLDERS = {"", "new chat", "untitled"}
+
+
+def _maybe_generate_title(svc: ChatService, repo: ChatRepository,
+                          sess: dict | None, *, question: str, answer: str) -> None:
+    """Auto-generate a session title after the first successful turn.
+
+    Skip when the user already renamed the session. Best-effort: any
+    failure is logged and swallowed so it never breaks the chat flow.
+    """
+    if not sess:
+        return
+    sid = sess.get("id")
+    title = (sess.get("title") or "").strip().lower()
+    if title not in _AUTO_TITLE_PLACEHOLDERS:
+        return
+    if not (question and answer):
+        return
+    try:
+        new_title = svc.generate_title(question=question, answer=answer)
+    except Exception:
+        log.exception("auto-title generation crashed for %s", sid)
+        return
+    if not new_title:
+        return
+    try:
+        repo.update_session(sid, title=new_title)
+    except Exception:
+        log.exception("auto-title persist failed for %s", sid)
+
+
 # ----------------------- identity stub -----------------------
 
 def _current_user() -> dict:
@@ -213,7 +244,10 @@ def send_message(sid: str):
         sources=out.get("sources") or [],
         entities=out.get("entities") or {},
         nodedetails=out.get("nodedetails") or {},
+        metric={"trace": out.get("trace") or {}},
     )
+
+    _maybe_generate_title(svc, repo, sess, question=question, answer=out["answer"])
 
     return jsonify({
         "session_id": sid,
@@ -229,6 +263,7 @@ def send_message(sid: str):
             "mode": out.get("mode"),
             "model": out.get("model"),
             "rewritten_question": out.get("rewritten_question"),
+            "trace": out.get("trace"),
         },
     })
 
@@ -405,7 +440,9 @@ def send_message_stream(sid: str):
                 sources=out.get("sources") or [],
                 entities=out.get("entities") or {},
                 nodedetails=out.get("nodedetails") or {},
+                metric={"trace": out.get("trace") or {}},
             )
+            _maybe_generate_title(svc, repo, sess, question=question, answer=out["answer"])
             payload = {
                 "session_id": sid,
                 "user_message_id": user_msg_id,
@@ -422,6 +459,7 @@ def send_message_stream(sid: str):
                     "rewritten_question": out.get("rewritten_question"),
                     "cypher": out.get("cypher"),
                     "rows": out.get("rows"),
+                    "trace": out.get("trace"),
                 },
             }
             q.put(("done", json.dumps(payload, default=str)))

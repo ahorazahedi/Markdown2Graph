@@ -32,6 +32,9 @@ ALLOWED_KEYS: set[str] = {
     "neo4j_username",
     "neo4j_password",
     "neo4j_database",
+    "chat_top_k",
+    "chat_doc_split_size",
+    "chat_embedding_filter_threshold",
 }
 
 

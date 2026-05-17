@@ -110,6 +110,23 @@ SPECS: tuple[PromptSpec, ...] = (
         ),
     ),
     PromptSpec(
+        key="chat_title_generate",
+        filename="chat_title_generate.md",
+        description=(
+            "Generates a short, descriptive title for a chat session from "
+            "the first question + first answer. Used after the first turn "
+            "to replace the default 'New chat' title."
+        ),
+        variables=(
+            {"name": "question",
+             "description": "The user's first message.",
+             "sample": "tell me about Fenretinide"},
+            {"name": "answer",
+             "description": "The assistant's first answer (possibly truncated).",
+             "sample": "Fenretinide is a synthetic retinoid evaluated for prostate cancer chemoprevention..."},
+        ),
+    ),
+    PromptSpec(
         key="community_summary_system",
         filename="community_summary_system.md",
         description=(

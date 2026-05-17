@@ -77,6 +77,11 @@ def get_settings_view():
                 "password_set": bool(s.neo4j_password),
                 "database": s.neo4j_database,
             },
+            "chat": {
+                "top_k": s.chat_top_k,
+                "doc_split_size": s.chat_doc_split_size,
+                "embedding_filter_threshold": s.chat_embedding_filter_threshold,
+            },
         }
     )
 
@@ -135,6 +140,41 @@ def put_neo4j_settings():
     resp = get_settings_view().get_json()
     resp["reconnect"] = {"ok": reconnect_error is None, "error": reconnect_error}
     return jsonify(resp)
+
+
+@bp.put("/settings/chat")
+def put_chat_settings():
+    """Persist chat retrieval tuning knobs."""
+    body: dict[str, Any] = request.get_json(force=True) or {}
+    updates: dict[str, Any] = {}
+    if "top_k" in body and body["top_k"] is not None:
+        try:
+            v = int(body["top_k"])
+            if not (1 <= v <= 100):
+                raise ValueError
+            updates["chat_top_k"] = v
+        except (TypeError, ValueError):
+            return jsonify({"error": "top_k must be an integer in [1, 100]"}), 400
+    if "doc_split_size" in body and body["doc_split_size"] is not None:
+        try:
+            v = int(body["doc_split_size"])
+            if not (64 <= v <= 8000):
+                raise ValueError
+            updates["chat_doc_split_size"] = v
+        except (TypeError, ValueError):
+            return jsonify({"error": "doc_split_size must be an integer in [64, 8000]"}), 400
+    if "embedding_filter_threshold" in body and body["embedding_filter_threshold"] is not None:
+        try:
+            v = float(body["embedding_filter_threshold"])
+            if not (0.0 <= v <= 1.0):
+                raise ValueError
+            updates["chat_embedding_filter_threshold"] = v
+        except (TypeError, ValueError):
+            return jsonify({"error": "embedding_filter_threshold must be a float in [0.0, 1.0]"}), 400
+
+    SettingsRepository().save(updates)
+    reload_settings()
+    return get_settings_view()
 
 
 # ---------------- tests ----------------
@@ -260,6 +300,38 @@ def list_models():
     base_url = _strip_trailing_slash(request.args.get("base_url") or s.effective_llm_base_url)
     api_key = request.args.get("api_key") or s.effective_llm_api_key
     kind = (request.args.get("kind") or "all").lower()
+
+    is_openrouter = "openrouter.ai" in (base_url or "").lower()
+
+    # OpenRouter's public /models endpoint omits embedding models entirely. Their
+    # frontend find endpoint exposes them and needs no auth. Use it when caller
+    # specifically asked for embedding models on an OpenRouter base URL.
+    if is_openrouter and kind == "embedding":
+        try:
+            with httpx.Client(timeout=20) as client:
+                r = client.get(
+                    "https://openrouter.ai/api/frontend/models/find",
+                    params={"output_modalities": "embeddings"},
+                    headers={"Accept": "application/json"},
+                )
+            if r.status_code >= 400:
+                return jsonify({"ok": False, "status": r.status_code, "error": r.text[:500], "models": []})
+            payload = r.json()
+            items = (payload.get("data") or {}).get("models") or []
+            out = []
+            for m in items:
+                mid = m.get("slug") or m.get("permaslug") or ""
+                if not mid:
+                    continue
+                out.append({
+                    "id": mid,
+                    "owned_by": m.get("author") or m.get("group") or "",
+                    "kind": "embedding",
+                })
+            out.sort(key=lambda x: x["id"])
+            return jsonify({"ok": True, "models": out})
+        except httpx.HTTPError as exc:
+            return jsonify({"ok": False, "error": str(exc), "models": []})
 
     if not api_key:
         return jsonify({"ok": False, "error": "api key missing", "models": []}), 200

@@ -1305,13 +1305,25 @@ class GraphRepository:
         rollout report `null` as their model.
         """
         t = self._target(node_type)
+        # Eligibility filter matches list_nodes_for_embedding so "missing"
+        # never counts nodes that can't be embedded (e.g. communities with
+        # no summary, chunks with no text).
+        if node_type == "chunk":
+            eligible = "n.text IS NOT NULL AND n.text <> ''"
+        elif node_type == "community":
+            eligible = "n.summary IS NOT NULL AND n.summary <> ''"
+        else:
+            eligible = "true"
         rows = self._run(
             f"""
             MATCH {t['match']}
-            WITH n, n.embedding IS NOT NULL AS has_emb
+            WITH n, n.embedding IS NOT NULL AS has_emb, ({eligible}) AS eligible
             RETURN
               count(n) AS total,
+              sum(CASE WHEN eligible THEN 1 ELSE 0 END) AS eligible_total,
               sum(CASE WHEN has_emb THEN 1 ELSE 0 END) AS embedded,
+              sum(CASE WHEN eligible AND NOT has_emb THEN 1 ELSE 0 END) AS missing,
+              sum(CASE WHEN (NOT eligible) AND NOT has_emb THEN 1 ELSE 0 END) AS ineligible,
               collect(CASE WHEN has_emb
                            THEN coalesce(n.embedding_model, '<unknown>')
                            ELSE NULL END) AS models
@@ -1328,7 +1340,8 @@ class GraphRepository:
         return {
             "total": int(r["total"] or 0),
             "embedded": int(r["embedded"] or 0),
-            "missing": int((r["total"] or 0) - (r["embedded"] or 0)),
+            "missing": int(r["missing"] or 0),
+            "ineligible": int(r["ineligible"] or 0),
             "by_model": by_model,
         }
 
