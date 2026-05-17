@@ -553,15 +553,22 @@ class AppStateRepository:
             )
             return int(cur.lastrowid)
 
-    def list_runs(self, *, status: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
+    def list_runs(self, *, status: str | None = None, kind: str | None = None,
+                  limit: int = 50, offset: int = 0) -> list[dict]:
         sql = (
             "SELECT id, kind, status, progress, stage, message, error, scope_json, "
             "result_json, started_at, ended_at, created_at FROM ingest_runs"
         )
+        where: list[str] = []
         params: list = []
         if status:
-            sql += " WHERE status=?"
+            where.append("status=?")
             params.append(status)
+        if kind:
+            where.append("kind=?")
+            params.append(kind)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         with self._connect() as c:

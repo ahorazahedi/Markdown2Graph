@@ -196,12 +196,15 @@ export const api = {
   clearGraph: () => jsonFetch<{ status: string; cleared: boolean }>("/api/graph", { method: "DELETE" }),
   runPostProcessing: (body: {
     cleanup?: boolean; dedup?: boolean; orphans?: boolean;
-    communities?: boolean; summaries?: boolean; community_levels?: number;
+    communities?: boolean; summaries?: boolean;
+    chunk_embeddings?: boolean;
+    entity_embeddings?: boolean; community_embeddings?: boolean;
+    community_levels?: number;
   } = {}) =>
-    jsonFetch<{
-      cleanup: any; dedup: any; orphans: any; communities: any;
-      errors: string[]; elapsed_seconds: number;
-    }>("/api/graph/post-process", { method: "POST", body: JSON.stringify(body) }),
+    jsonFetch<{ job_id: string; options: Record<string, any> }>(
+      "/api/graph/post-process",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
 
   // dedup + orphans
   listDuplicates: (params: { limit?: number; min_size?: number } = {}) => {
@@ -335,9 +338,10 @@ export const api = {
     ),
 
   // jobs (durable run history)
-  listJobs: (params: { status?: string; limit?: number; offset?: number } = {}) => {
+  listJobs: (params: { status?: string; kind?: string; limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams();
     if (params.status) q.set("status", params.status);
+    if (params.kind) q.set("kind", params.kind);
     if (params.limit != null) q.set("limit", String(params.limit));
     if (params.offset != null) q.set("offset", String(params.offset));
     return jsonFetch<{ items: JobRun[]; overview: JobOverview }>(`/api/jobs?${q.toString()}`);

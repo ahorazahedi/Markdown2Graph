@@ -19,12 +19,13 @@ bp = Blueprint("jobs", __name__)
 def list_jobs():
     state = AppStateRepository()
     status = request.args.get("status") or None
+    kind = request.args.get("kind") or None
     try:
         limit = max(1, min(int(request.args.get("limit", 50)), 200))
         offset = max(0, int(request.args.get("offset", 0)))
     except ValueError:
         raise ValidationError("limit and offset must be integers")
-    items = state.list_runs(status=status, limit=limit, offset=offset)
+    items = state.list_runs(status=status, kind=kind, limit=limit, offset=offset)
     return jsonify({"items": items, "overview": state.runs_overview()})
 
 

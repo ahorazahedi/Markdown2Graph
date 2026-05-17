@@ -27,6 +27,7 @@ from typing import Callable
 from ..llm.client import build_chat_llm
 from ..llm.recorder import with_tag
 from ..repositories.graph_repository import GraphRepository
+from .job_registry import JobCancelled
 from .prompt_store import PromptStore
 
 log = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class PostProcessingReport:
     dedup: dict | None = None
     orphans: dict | None = None
     communities: dict | None = None
+    chunk_embeddings: dict | None = None
     entity_embeddings: dict | None = None
     community_embeddings: dict | None = None
     errors: list[str] = field(default_factory=list)
@@ -70,15 +72,23 @@ class PostProcessingService:
             orphans: bool = False,
             communities: bool = True,
             summaries: bool = True,
+            chunk_embeddings: bool = False,
             entity_embeddings: bool = True,
             community_embeddings: bool = True,
             community_levels: int = 2,
             emit: Callable[[str, float, dict | None], None] | None = None,
+            is_cancelled: Callable[[], bool] | None = None,
             ) -> PostProcessingReport:
         rep = PostProcessingReport()
         t0 = time.time()
         notify = emit or (lambda *_args, **_kw: None)
+        cancelled = is_cancelled or (lambda: False)
 
+        def _check_cancel():
+            if cancelled():
+                raise JobCancelled("post-processing cancelled")
+
+        _check_cancel()
         if cleanup:
             try:
                 notify("post: cleanup starting", 0.05, None)
@@ -88,6 +98,7 @@ class PostProcessingService:
                 log.exception("cleanup failed")
                 rep.errors.append(f"cleanup: {e}")
 
+        _check_cancel()
         if dedup:
             try:
                 notify("post: dedup starting", 0.22, None)
@@ -97,6 +108,7 @@ class PostProcessingService:
                 log.exception("dedup failed")
                 rep.errors.append(f"dedup: {e}")
 
+        _check_cancel()
         if orphans:
             try:
                 notify("post: orphan sweep starting", 0.42, None)
@@ -106,40 +118,57 @@ class PostProcessingService:
                 log.exception("orphan sweep failed")
                 rep.errors.append(f"orphans: {e}")
 
+        _check_cancel()
         if communities:
             try:
                 notify("post: communities starting", 0.55, None)
-                rep.communities = self.run_communities(levels=max(1, int(community_levels)))
+                rep.communities = self.run_communities(
+                    levels=max(1, int(community_levels)),
+                    is_cancelled=cancelled,
+                )
                 notify(f"post: communities done — {rep.communities}", 0.75, None)
             except Exception as e:
                 log.exception("communities failed")
                 rep.errors.append(f"communities: {e}")
 
+        _check_cancel()
         if summaries and communities:
             try:
                 notify("post: community summaries starting", 0.80, None)
                 rep.communities = {
                     **(rep.communities or {}),
-                    "summaries": self.summarize_communities(),
+                    "summaries": self.summarize_communities(is_cancelled=cancelled),
                 }
                 notify("post: community summaries done", 0.90, None)
             except Exception as e:
                 log.exception("community summaries failed")
                 rep.errors.append(f"summaries: {e}")
 
+        _check_cancel()
+        if chunk_embeddings:
+            try:
+                notify("post: chunk embedding backfill starting", 0.91, None)
+                rep.chunk_embeddings = self.embed_chunks(is_cancelled=cancelled)
+                notify(f"post: chunk embeddings done — {rep.chunk_embeddings}", 0.92, None)
+            except Exception as e:
+                log.exception("chunk embeddings failed")
+                rep.errors.append(f"chunk_embeddings: {e}")
+
+        _check_cancel()
         if entity_embeddings:
             try:
                 notify("post: entity embeddings starting", 0.92, None)
-                rep.entity_embeddings = self.embed_entities()
+                rep.entity_embeddings = self.embed_entities(is_cancelled=cancelled)
                 notify(f"post: entity embeddings done — {rep.entity_embeddings}", 0.96, None)
             except Exception as e:
                 log.exception("entity embeddings failed")
                 rep.errors.append(f"entity_embeddings: {e}")
 
+        _check_cancel()
         if community_embeddings:
             try:
                 notify("post: community embeddings starting", 0.97, None)
-                rep.community_embeddings = self.embed_communities()
+                rep.community_embeddings = self.embed_communities(is_cancelled=cancelled)
                 notify(f"post: community embeddings done — {rep.community_embeddings}", 0.99, None)
             except Exception as e:
                 log.exception("community embeddings failed")
@@ -150,7 +179,47 @@ class PostProcessingService:
 
     # ---------------- embeddings ----------------
 
-    def embed_entities(self) -> dict:
+    def embed_chunks(self, *, is_cancelled: Callable[[], bool] | None = None) -> dict:
+        """Backfill `Chunk.embedding` for chunks created without one.
+
+        Repairs ingests where embedding failed (e.g. provider outage,
+        rate-limit). Also (re)creates the `vector` index. Safe to re-run.
+        """
+        from ..config import get_settings
+        from ..llm import build_embedder
+
+        settings = get_settings()
+        embedder, dim = build_embedder(settings)
+        batch_n = max(8, int(settings.entity_embedding_batch))
+
+        pending = self.repo.list_chunks_needing_embedding(limit=20_000)
+        if not pending:
+            self.repo.create_chunk_vector_index(dim)
+            return {"embedded": 0, "skipped": "no chunks pending"}
+        total = 0
+        for i in range(0, len(pending), batch_n):
+            if is_cancelled and is_cancelled():
+                raise JobCancelled("chunk embedding cancelled")
+            chunk = pending[i:i + batch_n]
+            texts = [(row.get("text") or "")[:8000] for row in chunk]
+            try:
+                vectors = embedder.embed_documents(texts)
+            except Exception as e:
+                log.warning("chunk batch embed failed (%d-%d): %s",
+                            i, i + len(chunk), e)
+                continue
+            self.repo.write_chunk_embeddings(
+                [{"id": row["cid"], "embedding": vec}
+                 for row, vec in zip(chunk, vectors)]
+            )
+            total += len(chunk)
+        try:
+            self.repo.create_chunk_vector_index(dim)
+        except Exception as e:
+            log.warning("chunk vector index create failed: %s", e)
+        return {"embedded": total, "dim": dim}
+
+    def embed_entities(self, *, is_cancelled: Callable[[], bool] | None = None) -> dict:
         """Compute `__Entity__.embedding` for nodes that don't have one.
 
         Text fed to embedder = `id + " — " + description` (mirrors
@@ -171,6 +240,8 @@ class PostProcessingService:
             return {"embedded": 0, "skipped": "no entities pending"}
         total = 0
         for i in range(0, len(pending), batch_n):
+            if is_cancelled and is_cancelled():
+                raise JobCancelled("entity embedding cancelled")
             chunk = pending[i:i + batch_n]
             texts = [
                 ((row.get("id") or "") + " — " + (row.get("description") or ""))[:2000]
@@ -192,7 +263,7 @@ class PostProcessingService:
             log.warning("entity_vector index create failed: %s", e)
         return {"embedded": total, "dim": dim}
 
-    def embed_communities(self) -> dict:
+    def embed_communities(self, *, is_cancelled: Callable[[], bool] | None = None) -> dict:
         """Same as `embed_entities` but for `__Community__.summary`."""
         from ..config import get_settings
         from ..llm import build_embedder
@@ -207,6 +278,8 @@ class PostProcessingService:
             return {"embedded": 0, "skipped": "no community summaries pending"}
         total = 0
         for i in range(0, len(pending), batch_n):
+            if is_cancelled and is_cancelled():
+                raise JobCancelled("community embedding cancelled")
             chunk = pending[i:i + batch_n]
             texts = [
                 ((row.get("title") or "") + " — " + (row.get("summary") or ""))[:4000]
@@ -331,7 +404,8 @@ class PostProcessingService:
 
     # ---------------- communities (no GDS) ----------------
 
-    def run_communities(self, *, levels: int = 2) -> dict:
+    def run_communities(self, *, levels: int = 2,
+                        is_cancelled: Callable[[], bool] | None = None) -> dict:
         """Build a hierarchical community structure over the entity subgraph.
 
         Strategy:
@@ -398,6 +472,13 @@ class PostProcessingService:
         if not partition_by_level:
             return self._run_communities_wcc()
 
+        if is_cancelled and is_cancelled():
+            raise JobCancelled("communities cancelled before wipe")
+
+        # ---- preserve metadata across rebuilds, keyed by member-set hash ----
+        # Stops re-running from burning LLM/embedding tokens on the same group.
+        preserved = self._snapshot_community_metadata()
+
         # ---- wipe old community structure ----
         self.repo._run("MATCH (c:__Community__) DETACH DELETE c")
         try:
@@ -409,18 +490,33 @@ class PostProcessingService:
 
         # ---- materialize each level ----
         community_node_id_by_level: list[list[str]] = []
+        restored_total = 0
         for L, members in enumerate(community_members_by_level):
             cids = []
             batch = []
+            restore_rows = []
             for idx, mem in enumerate(members):
                 cid = f"comm-L{L}-{idx}"
                 cids.append(cid)
-                # stable, deterministic title — pick first member's id as a sample
                 title_seed = id_by_eid.get(mem[0]) if mem else None
-                batch.append({
+                # member-set hash: stable digest of sorted entity ids
+                member_ids = sorted(id_by_eid.get(e) for e in mem if id_by_eid.get(e))
+                mhash = hashlib.sha256(
+                    ("|".join(member_ids)).encode("utf-8")
+                ).hexdigest() if member_ids else None
+                row = {
                     "id": cid, "level": L, "size": len(mem),
-                    "title_seed": title_seed,
-                })
+                    "title_seed": title_seed, "member_hash": mhash,
+                }
+                batch.append(row)
+                prev = preserved.get((L, mhash)) if mhash else None
+                if prev:
+                    restore_rows.append({
+                        "id": cid,
+                        "title": prev.get("title"),
+                        "summary": prev.get("summary"),
+                        "embedding": prev.get("embedding"),
+                    })
             community_node_id_by_level.append(cids)
             if batch:
                 self.repo._run(
@@ -430,10 +526,38 @@ class PostProcessingService:
                       ON CREATE SET c.created_at = timestamp()
                     SET c.level = row.level,
                         c.size = row.size,
+                        c.member_hash = row.member_hash,
                         c.title = coalesce(c.title, row.title_seed)
                     """,
                     batch=batch,
                 )
+            if restore_rows:
+                # restore title/summary
+                self.repo._run(
+                    """
+                    UNWIND $rows AS row
+                    MATCH (c:__Community__ {id: row.id})
+                    SET c.title   = coalesce(row.title, c.title),
+                        c.summary = coalesce(row.summary, c.summary)
+                    """,
+                    rows=[{"id": r["id"], "title": r["title"], "summary": r["summary"]}
+                          for r in restore_rows],
+                )
+                # restore embedding via setNodeVectorProperty (vector type)
+                for r in restore_rows:
+                    if r.get("embedding"):
+                        try:
+                            self.repo._run(
+                                """
+                                MATCH (c:__Community__ {id: $id})
+                                CALL db.create.setNodeVectorProperty(c, 'embedding', $vec)
+                                """,
+                                id=r["id"], vec=r["embedding"],
+                            )
+                        except Exception as e:
+                            log.warning("restore community embedding failed for %s: %s",
+                                        r["id"], e)
+                restored_total += len(restore_rows)
 
         # ---- link entities to level-0 communities ----
         links = []
@@ -575,8 +699,50 @@ class PostProcessingService:
             "levels": len(partition_by_level),
             "per_level": [len(m) for m in community_members_by_level],
             "parent_links": parent_links_total,
+            "restored": restored_total,
             "engine": "louvain",
         }
+
+    def _snapshot_community_metadata(self) -> dict[tuple[int, str], dict]:
+        """Snapshot {title, summary, embedding} of existing communities, keyed
+        by (level, member-set hash). Used to restore LLM-derived metadata
+        across a rebuild so re-running post-process is idempotent in practice
+        (no wasted LLM/embedding calls when membership is unchanged)."""
+        try:
+            rows = self.repo._run(
+                """
+                MATCH (c:__Community__)
+                OPTIONAL MATCH (c)<-[:IN_COMMUNITY]-(e:__Entity__)
+                WITH c, collect(DISTINCT e.id) AS member_ids
+                RETURN coalesce(c.level, 0) AS level,
+                       c.title AS title, c.summary AS summary,
+                       c.embedding AS embedding,
+                       c.member_hash AS stored_hash,
+                       member_ids
+                """
+            )
+        except Exception as e:
+            log.warning("community metadata snapshot failed: %s", e)
+            return {}
+        out: dict[tuple[int, str], dict] = {}
+        for r in rows:
+            if not (r.get("title") or r.get("summary") or r.get("embedding")):
+                continue
+            ids = sorted(x for x in (r.get("member_ids") or []) if x)
+            if not ids:
+                continue
+            mhash = hashlib.sha256("|".join(ids).encode("utf-8")).hexdigest()
+            # prefer the freshly-computed hash; fall back to stored_hash so we
+            # still match if a prior run stored one and membership is identical
+            out[(int(r["level"]), mhash)] = {
+                "title": r.get("title"),
+                "summary": r.get("summary"),
+                "embedding": r.get("embedding"),
+            }
+            stored = r.get("stored_hash")
+            if stored and stored != mhash:
+                out[(int(r["level"]), stored)] = out[(int(r["level"]), mhash)]
+        return out
 
     # ---- legacy single-level WCC fallback ----
     def _run_communities_wcc(self) -> dict:
@@ -663,7 +829,8 @@ class PostProcessingService:
 
     def summarize_communities(self,
                               *, max_communities: int = 200,
-                              min_size: int = 2) -> dict:
+                              min_size: int = 2,
+                              is_cancelled: Callable[[], bool] | None = None) -> dict:
         """LLM-write title + summary for each community with at least
         `min_size` members. Stored as c.summary, c.title. Idempotent for
         communities that already have a non-empty summary."""
@@ -686,6 +853,8 @@ class PostProcessingService:
         llm = build_chat_llm(tag="community_summary")
         done = 0
         for row in rows:
+            if is_cancelled and is_cancelled():
+                raise JobCancelled("community summaries cancelled")
             cid = row["id"]
             member_ids = [m.element_id for m in row["members"]]
             sub = self.repo._run(

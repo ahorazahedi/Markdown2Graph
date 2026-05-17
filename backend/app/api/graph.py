@@ -80,7 +80,7 @@ def neighborhood():
 
 @bp.post("/graph/post-process")
 def post_process():
-    """Run cleanup, dedup, orphan sweep, community detection.
+    """Submit a post-processing job (async). Returns ``{job_id}``.
 
     Body (all optional):
         {
@@ -89,33 +89,67 @@ def post_process():
           "orphans":         bool (default false),
           "communities":     bool (default true),
           "summaries":       bool (default true),
+          "chunk_embeddings":     bool (default false) — backfill missing
+                                  Chunk.embedding values (no LLM cost),
+          "entity_embeddings":    bool (default true),
+          "community_embeddings": bool (default true),
           "community_levels": int (default 2)
         }
+
+    409 Conflict if another post_process job is already running.
+    Progress and cancellation flow through the standard /api/jobs API.
     """
     from flask import request
+    from ..repositories.app_state_repository import AppStateRepository
+    from ..services.job_registry import job_registry
     from ..services.post_processing import PostProcessingService
     body = request.get_json(silent=True) or {}
-    svc = PostProcessingService()
-    rep = svc.run(
-        cleanup=bool(body.get("cleanup", True)),
-        dedup=bool(body.get("dedup", False)),
-        orphans=bool(body.get("orphans", False)),
-        communities=bool(body.get("communities", True)),
-        summaries=bool(body.get("summaries", True)),
-        entity_embeddings=bool(body.get("entity_embeddings", True)),
-        community_embeddings=bool(body.get("community_embeddings", True)),
-        community_levels=int(body.get("community_levels", 2) or 2),
-    )
-    return jsonify({
-        "cleanup": rep.cleanup,
-        "dedup": rep.dedup,
-        "orphans": rep.orphans,
-        "communities": rep.communities,
-        "entity_embeddings": rep.entity_embeddings,
-        "community_embeddings": rep.community_embeddings,
-        "errors": rep.errors,
-        "elapsed_seconds": rep.elapsed_seconds,
-    })
+
+    # single-flight guard — racing two community rebuilds corrupts state
+    state = AppStateRepository()
+    for st in ("running", "queued", "cancelling"):
+        existing = [r for r in state.list_runs(status=st, kind="post_process", limit=10)]
+        if existing:
+            return jsonify({
+                "error": "post-process job already in progress",
+                "job_id": existing[0]["id"],
+                "status": existing[0]["status"],
+            }), 409
+
+    opts = {
+        "cleanup": bool(body.get("cleanup", True)),
+        "dedup": bool(body.get("dedup", False)),
+        "orphans": bool(body.get("orphans", False)),
+        "communities": bool(body.get("communities", True)),
+        "summaries": bool(body.get("summaries", True)),
+        "chunk_embeddings": bool(body.get("chunk_embeddings", False)),
+        "entity_embeddings": bool(body.get("entity_embeddings", True)),
+        "community_embeddings": bool(body.get("community_embeddings", True)),
+        "community_levels": int(body.get("community_levels", 2) or 2),
+    }
+
+    def runner(update, cancelled):
+        from ..services.job_registry import JobUpdate
+        svc = PostProcessingService()
+
+        def emit(msg: str, prog: float, _extra=None):
+            update(JobUpdate(stage="post_process", message=msg, progress=prog))
+
+        rep = svc.run(emit=emit, is_cancelled=cancelled, **opts)
+        return {
+            "cleanup": rep.cleanup,
+            "dedup": rep.dedup,
+            "orphans": rep.orphans,
+            "communities": rep.communities,
+            "chunk_embeddings": rep.chunk_embeddings,
+            "entity_embeddings": rep.entity_embeddings,
+            "community_embeddings": rep.community_embeddings,
+            "errors": rep.errors,
+            "elapsed_seconds": rep.elapsed_seconds,
+        }
+
+    job_id = job_registry.submit(runner, kind="post_process", scope=opts)
+    return jsonify({"job_id": job_id, "options": opts})
 
 
 @bp.get("/graph/duplicates")

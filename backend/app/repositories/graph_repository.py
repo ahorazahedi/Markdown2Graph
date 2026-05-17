@@ -332,6 +332,21 @@ class GraphRepository:
             """
         )
 
+    def list_chunks_needing_embedding(self, *, limit: int = 5000) -> list[dict]:
+        """Chunk nodes without an `embedding` property yet — used by the
+        backfill path so a failed-embedding ingest can be repaired without
+        re-running LLM extraction."""
+        rows = self._run(
+            """
+            MATCH (c:Chunk)
+            WHERE c.embedding IS NULL AND c.text IS NOT NULL AND c.text <> ''
+            RETURN c.id AS cid, c.text AS text
+            LIMIT $limit
+            """,
+            limit=int(limit),
+        )
+        return [dict(r) for r in rows]
+
     def list_entities_needing_embedding(self, *, limit: int = 5000) -> list[dict]:
         """__Entity__ nodes without an `embedding` property yet."""
         rows = self._run(

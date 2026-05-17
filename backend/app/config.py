@@ -38,7 +38,7 @@ class Settings(BaseSettings):
 
     # Embeddings — default to OpenRouter so the local HF download path is opt-in.
     embedding_provider: str = "openrouter"
-    embedding_model: str = "google/gemini-embedding-001"
+    embedding_model: str = "google/gemini-embedding-2-preview"
     embedding_dimension: int = 3072
 
     # Chunking

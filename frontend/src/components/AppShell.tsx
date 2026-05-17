@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Database, FileText, GitBranch, Play, ScrollText, Settings2, FileCode2, ListChecks, MessageSquare } from "lucide-react";
+import { Activity, Database, FileText, GitBranch, Play, ScrollText, Settings2, FileCode2, ListChecks, MessageSquare, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, AppConfig } from "@/lib/api";
 import { guard } from "@/lib/unsavedGuard";
@@ -9,6 +9,7 @@ export type Route =
   | "schema"
   | "ingest"
   | "graph"
+  | "post-process"
   | "prompts"
   | "jobs"
   | "llm-calls"
@@ -19,6 +20,7 @@ const NAV: { key: Route; label: string; icon: any; hint: string }[] = [
   { key: "schema",     label: "Schema",     icon: GitBranch,  hint: "Nodes & relationships" },
   { key: "ingest",     label: "Ingest",     icon: Play,       hint: "Run extraction" },
   { key: "graph",      label: "Graph",      icon: Database,   hint: "Viewer & stats" },
+  { key: "post-process", label: "Post-process", icon: Sparkles, hint: "Cleanup, dedup, communities" },
   { key: "prompts",    label: "Prompts",    icon: FileCode2,  hint: "System templates" },
   { key: "jobs",       label: "Jobs",       icon: ListChecks, hint: "Run history & logs" },
   { key: "llm-calls",  label: "LLM Calls",  icon: ScrollText, hint: "Audit log" },

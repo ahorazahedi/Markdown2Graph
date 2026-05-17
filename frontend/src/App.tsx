@@ -8,6 +8,7 @@ import { SchemaPage } from "@/pages/SchemaPage";
 import { DocumentsPage } from "@/pages/DocumentsPage";
 import { IngestPage } from "@/pages/IngestPage";
 import { GraphPage } from "@/pages/GraphPage";
+import { PostProcessPage } from "@/pages/PostProcessPage";
 import { PromptsPage } from "@/pages/PromptsPage";
 import { JobsPage } from "@/pages/JobsPage";
 import { LLMCallsPage } from "@/pages/LLMCallsPage";
@@ -55,6 +56,7 @@ function AdminApp({ config }: { config: any }) {
         {route === "schema"     && <SchemaPage />}
         {route === "ingest"     && <IngestPage />}
         {route === "graph"      && <GraphPage config={config} />}
+        {route === "post-process" && <PostProcessPage />}
         {route === "prompts"    && <PromptsPage />}
         {route === "jobs"       && <JobsPage />}
         {route === "llm-calls"  && <LLMCallsPage />}

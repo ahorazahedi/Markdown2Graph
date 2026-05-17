@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ExternalLink, RefreshCw, Trash2, Sparkles, X, AlertTriangle, CheckCircle2, Copy, Unlink } from "lucide-react";
+import { ExternalLink, RefreshCw, Trash2, Sparkles, X, Copy, Unlink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -27,20 +27,6 @@ export function GraphPage({ config }: { config: AppConfig | null }) {
   // focus / neighborhood state
   const [focusInfo, setFocusInfo] = useState<{ elementId: string; depth: number } | null>(null);
   const [expanding, setExpanding] = useState(false);
-
-  // post-processing state
-  const [ppOpen, setPpOpen] = useState(false);
-  const [ppCleanup, setPpCleanup] = useState(true);
-  const [ppDedup, setPpDedup] = useState(false);
-  const [ppOrphans, setPpOrphans] = useState(false);
-  const [ppCommunities, setPpCommunities] = useState(true);
-  const [ppSummaries, setPpSummaries] = useState(true);
-  const [ppLevels, setPpLevels] = useState(2);
-  const [ppRunning, setPpRunning] = useState(false);
-  const [ppReport, setPpReport] = useState<{
-    cleanup: any; dedup: any; orphans: any; communities: any;
-    errors: string[]; elapsed_seconds: number;
-  } | null>(null);
 
   // dedup + orphan management dialogs
   const [dupOpen, setDupOpen] = useState(false);
@@ -112,8 +98,8 @@ export function GraphPage({ config }: { config: AppConfig | null }) {
               <Button variant="outline" size="sm" onClick={refresh} disabled={busy}>
                 <RefreshCw className={busy ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} /> Refresh
               </Button>
-              <Button variant="outline" size="sm" disabled={busy || ppRunning}
-                      onClick={() => setPpOpen(true)}>
+              <Button variant="outline" size="sm" disabled={busy}
+                      onClick={() => { window.location.hash = "#/post-process"; }}>
                 <Sparkles className="h-3.5 w-3.5" /> Post-process
               </Button>
               <Button variant="outline" size="sm" onClick={() => setDupOpen(true)}>
@@ -146,39 +132,6 @@ export function GraphPage({ config }: { config: AppConfig | null }) {
         />
       }
     >
-
-      <PostProcessDialog
-        open={ppOpen}
-        cleanup={ppCleanup} setCleanup={setPpCleanup}
-        dedup={ppDedup} setDedup={setPpDedup}
-        orphans={ppOrphans} setOrphans={setPpOrphans}
-        communities={ppCommunities} setCommunities={setPpCommunities}
-        summaries={ppSummaries} setSummaries={setPpSummaries}
-        levels={ppLevels} setLevels={setPpLevels}
-        running={ppRunning}
-        onClose={() => setPpOpen(false)}
-        onRun={async () => {
-          setPpRunning(true); setPpReport(null);
-          try {
-            const r = await api.runPostProcessing({
-              cleanup: ppCleanup, dedup: ppDedup, orphans: ppOrphans,
-              communities: ppCommunities, summaries: ppSummaries,
-              community_levels: ppLevels,
-            });
-            setPpReport(r);
-            setPpOpen(false);
-            await refresh();
-            await loadExplore();
-          } catch (e: any) {
-            setPpReport({ cleanup: null, dedup: null, orphans: null, communities: null,
-                          errors: [String(e.message || e)], elapsed_seconds: 0 });
-          } finally { setPpRunning(false); }
-        }}
-      />
-
-      {ppReport && (
-        <PostProcessReport report={ppReport} onDismiss={() => setPpReport(null)} />
-      )}
 
       {dupOpen && (
         <DuplicateDialog
@@ -316,177 +269,6 @@ export function GraphPage({ config }: { config: AppConfig | null }) {
         </TabsContent>
       </Tabs>
     </PageContainer>
-  );
-}
-
-// ---------- post-processing modal + result panel ----------
-
-function PostProcessDialog({
-  open, cleanup, setCleanup, dedup, setDedup, orphans, setOrphans,
-  communities, setCommunities, summaries, setSummaries,
-  levels, setLevels, running, onClose, onRun,
-}: {
-  open: boolean; running: boolean;
-  cleanup: boolean; setCleanup: (b: boolean) => void;
-  dedup: boolean; setDedup: (b: boolean) => void;
-  orphans: boolean; setOrphans: (b: boolean) => void;
-  communities: boolean; setCommunities: (b: boolean) => void;
-  summaries: boolean; setSummaries: (b: boolean) => void;
-  levels: number; setLevels: (n: number) => void;
-  onClose: () => void; onRun: () => void;
-}) {
-  if (!open) return null;
-  const anyChecked = cleanup || dedup || orphans || communities || summaries;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-         onClick={onClose}>
-      <div className="w-full max-w-lg rounded-md border border-border bg-card p-5 shadow-xl"
-           onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-start justify-between">
-          <div>
-            <h2 className="text-base font-semibold">Run post-processing</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Best run <strong>after every document is ingested</strong>. The
-              graph is finalised first, then cleanup canonicalises duplicate
-              labels &amp; relationships, then community detection groups
-              related entities, and finally each community gets an LLM-written
-              summary.
-            </p>
-          </div>
-          <button onClick={onClose}
-                  className="rounded-sm p-1 text-muted-foreground hover:bg-accent">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="mt-4 space-y-3">
-          <Task name="Schema cleanup"
-                desc="LLM consolidates synonyms — e.g. Disease/Illness/Disorder → Disease, TREATS/TREATED_BY → TREATS. Run before dedup so canonicalised labels feed grouping."
-                checked={cleanup} onChange={setCleanup} />
-          <Task name="Duplicate entity merge"
-                desc="Auto-merge __Entity__ nodes whose id normalises to the same key (case + punctuation). Canonical = richest-provenance member. Use the dedicated Duplicates dialog if you want manual review."
-                checked={dedup} onChange={setDedup} />
-          <Task name="Orphan sweep"
-                desc="Delete every __Entity__ that no Chunk points at. Useful after manual cleanup or re-extraction."
-                checked={orphans} onChange={setOrphans} />
-          <Task name="Hierarchical communities (Louvain)"
-                desc="Multi-level community detection via networkx Louvain — no GDS required. Each level gets a __Community__ node; lower levels link UP via PARENT_COMMUNITY."
-                checked={communities} onChange={setCommunities} />
-          {communities && (
-            <div className="flex items-center gap-3 pl-9 text-xs">
-              <Label className="text-2xs">Levels</Label>
-              <Input type="number" min={1} max={4} className="w-20"
-                     value={levels}
-                     onChange={(e) => setLevels(Math.max(1, Math.min(4, parseInt(e.target.value || "2", 10))))} />
-              <span className="text-muted-foreground">1 = single level; 2–3 typical.</span>
-            </div>
-          )}
-          <Task name="Community summaries"
-                desc="LLM writes a one-line title + 2–3 sentence summary for each community ≥ 2 entities. Existing summaries are kept (idempotent)."
-                checked={summaries} onChange={setSummaries}
-                disabled={!communities}
-                hint={!communities ? "requires community detection" : undefined} />
-        </div>
-
-        <div className="mt-5 flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={running}>Cancel</Button>
-          <Button size="sm" onClick={onRun} disabled={!anyChecked || running}>
-            <Sparkles className="h-3.5 w-3.5" /> {running ? "Running…" : "Run"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Task({ name, desc, checked, onChange, disabled, hint }: {
-  name: string; desc: string; checked: boolean;
-  onChange: (b: boolean) => void; disabled?: boolean; hint?: string;
-}) {
-  return (
-    <label className={"flex gap-3 rounded-sm border border-border bg-background/40 p-3 " +
-                      (disabled ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-accent/40")}>
-      <input type="checkbox" className="mt-0.5"
-             checked={checked && !disabled}
-             disabled={disabled}
-             onChange={(e) => onChange(e.target.checked)} />
-      <div className="min-w-0">
-        <div className="text-sm font-medium">{name}{hint && <span className="ml-2 text-2xs text-muted-foreground">({hint})</span>}</div>
-        <p className="text-xs text-muted-foreground">{desc}</p>
-      </div>
-    </label>
-  );
-}
-
-function PostProcessReport({
-  report, onDismiss,
-}: {
-  report: { cleanup: any; dedup: any; orphans: any; communities: any;
-            errors: string[]; elapsed_seconds: number };
-  onDismiss: () => void;
-}) {
-  const hasErrors = report.errors && report.errors.length > 0;
-  return (
-    <div className={"mb-4 rounded-md border p-3 " +
-                    (hasErrors ? "border-warning/40 bg-warning/5" : "border-success/30 bg-success/5")}>
-      <div className="flex items-start gap-2">
-        {hasErrors
-          ? <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
-          : <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />}
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium">
-            Post-processing finished in {report.elapsed_seconds}s
-          </div>
-          <div className="mt-1 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
-            {report.cleanup && (
-              <div>
-                <span className="text-foreground">Cleanup:</span>{" "}
-                {report.cleanup.node_renames ?? 0} label renames,{" "}
-                {report.cleanup.rel_renames ?? 0} rel renames
-              </div>
-            )}
-            {report.dedup && (
-              <div>
-                <span className="text-foreground">Dedup:</span>{" "}
-                {report.dedup.groups_merged ?? 0} groups,{" "}
-                {report.dedup.aliases_merged ?? 0} aliases merged,{" "}
-                {report.dedup.relationships_moved ?? 0} rels moved
-              </div>
-            )}
-            {report.orphans && (
-              <div>
-                <span className="text-foreground">Orphans:</span>{" "}
-                {report.orphans.deleted ?? 0} deleted (of {report.orphans.orphans_found ?? 0})
-              </div>
-            )}
-            {report.communities && (
-              <div>
-                <span className="text-foreground">Communities:</span>{" "}
-                {report.communities.communities ?? 0} created
-                {report.communities.per_level && (
-                  <> · per level: [{report.communities.per_level.join(", ")}]</>
-                )}
-                {report.communities.parent_links != null && (
-                  <> · {report.communities.parent_links} parent links</>
-                )}
-                {report.communities.summaries && (
-                  <> · summaries: {report.communities.summaries.summarized ?? 0}/{report.communities.summaries.considered ?? 0}</>
-                )}
-              </div>
-            )}
-          </div>
-          {hasErrors && (
-            <ul className="mt-1 list-disc pl-5 text-xs text-warning">
-              {report.errors.map((e, i) => <li key={i}>{e}</li>)}
-            </ul>
-          )}
-        </div>
-        <button onClick={onDismiss}
-                className="rounded-sm p-1 text-muted-foreground hover:bg-accent">
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
-    </div>
   );
 }
 
