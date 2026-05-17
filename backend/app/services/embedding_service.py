@@ -218,6 +218,10 @@ class EmbeddingService:
                 _notify(f"reembed:{nt}",
                         f"{nt}: {done}/{total}", min(0.99, p),
                         {"done": done, "total": total})
+                # bail immediately if cancel landed mid-batch — without this,
+                # a slow single-batch type runs to completion before the outer
+                # _check_cancel() at the top of the next type fires.
+                _check_cancel()
 
             # Recreate index at the end so it picks up the latest dim.
             try:
@@ -225,7 +229,11 @@ class EmbeddingService:
             except Exception as e:
                 type_report["errors"].append(f"index: {e}")
             report["types"][nt] = type_report
+            _check_cancel()
 
+        # final cancel check so we don't tell the user "complete" if a cancel
+        # was requested between the last type and here
+        _check_cancel()
         _notify("reembed:done", "re-embedding complete", 1.0, report)
         return report
 
